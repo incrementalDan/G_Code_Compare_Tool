@@ -11,7 +11,7 @@ const App = (() => {
     ignoreWhitespace: true,
     ignoreCase: true,
     normalizeGMCodes: true,
-    ignoreLineNumbers: false,
+    ignoreLineNumbers: true,
     ignoreBlockDelete: false,
     minorThreshold: 0.0002,
     majorThreshold: 0.0005,
@@ -76,8 +76,17 @@ N120 M30`;
   }
 
   // === Settings persistence ===
+  const SETTINGS_VERSION = 2; // bump when defaults change to clear stale localStorage
+
   function loadSettings() {
     try {
+      const ver = parseInt(localStorage.getItem('gcode-compare-settings-version') || '0');
+      if (ver < SETTINGS_VERSION) {
+        // Stale settings — clear and use new defaults
+        localStorage.removeItem('gcode-compare-settings');
+        localStorage.setItem('gcode-compare-settings-version', String(SETTINGS_VERSION));
+        return;
+      }
       const saved = localStorage.getItem('gcode-compare-settings');
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -87,6 +96,7 @@ N120 M30`;
   }
 
   function saveSettings() {
+    localStorage.setItem('gcode-compare-settings-version', String(SETTINGS_VERSION));
     localStorage.setItem('gcode-compare-settings', JSON.stringify(settings));
   }
 
