@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>G-Code Compare</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <div id="header">
+    <h1>G-Code Compare</h1>
+    <div class="header-buttons">
+      <button class="btn" id="btn-open-left">Open Left</button>
+      <button class="btn" id="btn-open-right">Open Right</button>
+      <button class="btn" id="btn-swap">Swap Panes</button>
+      <button class="btn" id="btn-save-left">Save Left</button>
+      <button class="btn" id="btn-save-right">Save Right</button>
+      <button class="btn btn-accent" id="btn-example">Load Example</button>
+    </div>
+    <button id="settings-toggle" title="Settings">&#9881;</button>
+  </div>
+
+  <!-- Main area -->
+  <div id="main">
+    <!-- Left pane -->
+    <div class="pane" id="left-pane">
+      <div class="pane-header">
+        <span class="pane-label">Machine File (Reference)</span>
+        <span class="pane-filename" id="left-filename">untitled</span>
+      </div>
+      <div class="editor-container" id="left-editor"></div>
+    </div>
+
+    <!-- Center gutter with diff nav & markers -->
+    <div id="diff-gutter">
+      <div id="diff-nav">
+        <button class="diff-nav-btn" id="btn-prev-diff" title="Previous Diff (Shift+F7)">&#9650;</button>
+        <button class="diff-nav-btn" id="btn-next-diff" title="Next Diff (F7)">&#9660;</button>
+      </div>
+      <div id="diff-markers"></div>
+    </div>
+
+    <!-- Right pane -->
+    <div class="pane" id="right-pane">
+      <div class="pane-header">
+        <span class="pane-label">CAM File (Candidate)</span>
+        <span class="pane-filename" id="right-filename">untitled</span>
+      </div>
+      <div class="editor-container" id="right-editor"></div>
+    </div>
+  </div>
+
+  <!-- Settings panel (slide-out) -->
+  <div id="settings-panel">
+    <div class="settings-section">
+      <h3>Ignore Rules</h3>
+      <div class="setting-row">
+        <label for="opt-ignore-paren-comments">Ignore comments ( )</label>
+        <input type="checkbox" id="opt-ignore-paren-comments" checked>
+      </div>
+      <div class="setting-row">
+        <label for="opt-ignore-semi-comments">Ignore comments ;</label>
+        <input type="checkbox" id="opt-ignore-semi-comments" checked>
+      </div>
+      <div class="setting-row">
+        <label for="opt-ignore-whitespace">Ignore whitespace</label>
+        <input type="checkbox" id="opt-ignore-whitespace" checked>
+      </div>
+      <div class="setting-row">
+        <label for="opt-ignore-case">Ignore case</label>
+        <input type="checkbox" id="opt-ignore-case" checked>
+      </div>
+      <div class="setting-row">
+        <label for="opt-normalize-gm">Normalize G/M codes</label>
+        <input type="checkbox" id="opt-normalize-gm" checked>
+      </div>
+      <div class="setting-row">
+        <label for="opt-ignore-line-numbers">Ignore line numbers</label>
+        <input type="checkbox" id="opt-ignore-line-numbers">
+      </div>
+      <div class="setting-row">
+        <label for="opt-ignore-block-delete">Ignore block delete</label>
+        <input type="checkbox" id="opt-ignore-block-delete">
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Numeric Tolerance</h3>
+      <div class="setting-row">
+        <label>Minor threshold</label>
+        <div class="stepper">
+          <button class="stepper-btn" data-target="minor" data-dir="-1">-</button>
+          <span class="stepper-value" id="minor-threshold-value">0.0002</span>
+          <button class="stepper-btn" data-target="minor" data-dir="1">+</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Major threshold</label>
+        <div class="stepper">
+          <button class="stepper-btn" data-target="major" data-dir="-1">-</button>
+          <span class="stepper-value" id="major-threshold-value">0.0005</span>
+          <button class="stepper-btn" data-target="major" data-dir="1">+</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label for="opt-hide-minor">Hide minor differences</label>
+        <input type="checkbox" id="opt-hide-minor">
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Display</h3>
+      <div class="setting-row">
+        <label for="opt-sync-scroll">Synchronized scrolling</label>
+        <input type="checkbox" id="opt-sync-scroll" checked>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status bar -->
+  <div id="status-bar">
+    <div id="status-left">
+      <span>Major: <span class="status-major" id="stat-major">0</span></span>
+      <span>Minor: <span class="status-minor" id="stat-minor">0</span></span>
+      <span>Lines: <span id="stat-lines-left">0</span> / <span id="stat-lines-right">0</span></span>
+    </div>
+    <div id="status-center"></div>
+    <div id="status-right">
+      <span id="stat-cursor">Ln 1, Col 1</span>
+    </div>
+  </div>
+
+  <!-- Hidden file inputs -->
+  <input type="file" id="file-input-left" style="display:none" accept=".nc,.gcode,.tap,.txt,.ngc,.cnc,.prg">
+  <input type="file" id="file-input-right" style="display:none" accept=".nc,.gcode,.tap,.txt,.ngc,.cnc,.prg">
+
+  <!-- Scripts -->
+  <script src="js/diff-engine.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
