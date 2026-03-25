@@ -228,35 +228,82 @@ N120 M30`;
       settings.majorThreshold
     );
 
-    // Build decorations
+    // Build decorations AND alignment padding
+    // Walk through diff ops and track where each side needs padding
+    // to keep matching lines at the same visual row.
     const leftDecos = [];
     const rightDecos = [];
+    const leftPadding = {};  // lineIdx -> # of blank lines to insert BEFORE this line
+    const rightPadding = {}; // lineIdx -> # of blank lines to insert BEFORE this line
     diffPositions = [];
+
+    // We need to figure out alignment. Process diff ops sequentially.
+    // For each op, track the "display row" on each side.
+    // When one side has a line and the other doesn't (added/removed),
+    // the side that doesn't gets a padding line.
+    //
+    // We accumulate pending padding and attach it to the next real line on that side.
+
+    let leftPendingPad = 0;
+    let rightPendingPad = 0;
+    let lastLeftIdx = -1;
+    let lastRightIdx = -1;
 
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
 
-      if (op.type === 'major') {
-        leftDecos.push({ line: op.leftIdx, type: 'major' });
-        rightDecos.push({ line: op.rightIdx, type: 'major' });
-        diffPositions.push(i);
-      } else if (op.type === 'minor') {
-        if (!settings.hideMinor) {
-          leftDecos.push({ line: op.leftIdx, type: 'minor' });
-          rightDecos.push({ line: op.rightIdx, type: 'minor' });
+      if (op.type === 'equal' || op.type === 'major' || op.type === 'minor') {
+        // Both sides have a line — flush any pending padding
+        if (leftPendingPad > 0 && op.leftIdx !== undefined) {
+          leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
+          leftPendingPad = 0;
         }
-        diffPositions.push(i);
+        if (rightPendingPad > 0 && op.rightIdx !== undefined) {
+          rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
+          rightPendingPad = 0;
+        }
+
+        if (op.type === 'major') {
+          leftDecos.push({ line: op.leftIdx, type: 'major' });
+          rightDecos.push({ line: op.rightIdx, type: 'major' });
+          diffPositions.push(i);
+        } else if (op.type === 'minor') {
+          if (!settings.hideMinor) {
+            leftDecos.push({ line: op.leftIdx, type: 'minor' });
+            rightDecos.push({ line: op.rightIdx, type: 'minor' });
+          }
+          diffPositions.push(i);
+        }
+        lastLeftIdx = op.leftIdx;
+        lastRightIdx = op.rightIdx;
+
       } else if (op.type === 'added') {
+        // Line only on right — left side needs a padding line
         rightDecos.push({ line: op.rightIdx, type: 'added' });
         diffPositions.push(i);
+        leftPendingPad++;
+        lastRightIdx = op.rightIdx;
+
       } else if (op.type === 'removed') {
+        // Line only on left — right side needs a padding line
         leftDecos.push({ line: op.leftIdx, type: 'removed' });
         diffPositions.push(i);
+        rightPendingPad++;
+        lastLeftIdx = op.leftIdx;
       }
     }
 
-    Editor.setDecorations('left', leftDecos);
-    Editor.setDecorations('right', rightDecos);
+    // If there's trailing padding, attach it after the last line
+    // by adding it to a sentinel line index (the line count)
+    if (leftPendingPad > 0) {
+      leftPadding[leftLines.length] = (leftPadding[leftLines.length] || 0) + leftPendingPad;
+    }
+    if (rightPendingPad > 0) {
+      rightPadding[rightLines.length] = (rightPadding[rightLines.length] || 0) + rightPendingPad;
+    }
+
+    Editor.setDecorations('left', leftDecos, leftPadding);
+    Editor.setDecorations('right', rightDecos, rightPadding);
 
     // Update diff markers in center gutter
     updateDiffMarkers(leftDecos, rightDecos, leftLines.length, rightLines.length);
@@ -270,8 +317,8 @@ N120 M30`;
   }
 
   function clearDecorations() {
-    Editor.setDecorations('left', []);
-    Editor.setDecorations('right', []);
+    Editor.setDecorations('left', [], {});
+    Editor.setDecorations('right', [], {});
     document.getElementById('diff-markers').innerHTML = '';
   }
 

@@ -17,6 +17,7 @@
   --diff-added: #1a3a4a;
   --diff-removed: #3d1f2f;
 
+  --line-height: 20px;
   --font-mono: 'JetBrains Mono', Consolas, 'Courier New', monospace;
 }
 
@@ -85,7 +86,7 @@ html, body {
 /* ===== Main Layout ===== */
 #main {
   display: flex;
-  height: calc(100vh - 44px - 28px); /* header + status bar */
+  height: calc(100vh - 44px - 28px);
 }
 
 /* ===== Editor Panes ===== */
@@ -138,32 +139,94 @@ html, body {
   outline-offset: -2px;
 }
 
-/* CodeMirror overrides */
-.editor-container .cm-editor {
+/* ===== Single-layer editor ===== */
+.editor-wrapper {
+  position: relative;
   height: 100%;
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-
-.editor-container .cm-scroller {
   overflow: auto;
 }
 
-.editor-container .cm-content {
+/* Hidden textarea that captures keyboard input */
+.editor-input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
   font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: var(--line-height);
+  padding: 0;
+  margin: 0;
+  border: none;
+  resize: none;
+  z-index: 2;
+  cursor: text;
+  white-space: pre;
+  tab-size: 4;
+  overflow: hidden; /* wrapper handles scrolling */
 }
 
-/* Diff highlight lines */
-.cm-diff-major { background-color: var(--diff-major) !important; }
-.cm-diff-minor { background-color: var(--diff-minor) !important; }
-.cm-diff-added { background-color: var(--diff-added) !important; }
-.cm-diff-removed { background-color: var(--diff-removed) !important; }
+/* Rendered display of lines */
+.editor-display {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+  min-height: 100%;
+}
 
-/* Left border markers for diff lines */
-.cm-diff-major-marker { border-left: 3px solid #ff4444 !important; }
-.cm-diff-minor-marker { border-left: 3px solid #ffaa33 !important; }
-.cm-diff-added-marker { border-left: 3px solid #33aaff !important; }
-.cm-diff-removed-marker { border-left: 3px solid #cc44aa !important; }
+.editor-line {
+  display: flex;
+  height: var(--line-height);
+  line-height: var(--line-height);
+  white-space: pre;
+}
+
+.line-num {
+  display: inline-block;
+  width: 48px;
+  min-width: 48px;
+  text-align: right;
+  padding-right: 8px;
+  color: #444;
+  background: #0d0d1a;
+  border-right: 1px solid var(--border);
+  user-select: none;
+  font-size: 12px;
+}
+
+.line-content {
+  flex: 1;
+  padding-left: 8px;
+  min-width: 0;
+}
+
+/* Padding lines for alignment */
+.padding-line {
+  background: var(--bg-editor);
+}
+
+.padding-line .line-num {
+  color: transparent;
+}
+
+.padding-line .line-content {
+  background: #0a0a18;
+}
+
+/* Diff background colors on lines */
+.diff-bg-major { background-color: var(--diff-major); }
+.diff-bg-major .line-content { border-left: 3px solid #ff4444; padding-left: 5px; }
+
+.diff-bg-minor { background-color: var(--diff-minor); }
+.diff-bg-minor .line-content { border-left: 3px solid #ffaa33; padding-left: 5px; }
+
+.diff-bg-added { background-color: var(--diff-added); }
+.diff-bg-added .line-content { border-left: 3px solid #33aaff; padding-left: 5px; }
+
+.diff-bg-removed { background-color: var(--diff-removed); }
+.diff-bg-removed .line-content { border-left: 3px solid #cc44aa; padding-left: 5px; }
 
 /* G-code syntax tokens */
 .gcode-g { color: #6699cc; }
@@ -286,7 +349,6 @@ html, body {
   cursor: pointer;
 }
 
-/* Stepper controls for tolerance */
 .stepper {
   display: flex;
   align-items: center;
