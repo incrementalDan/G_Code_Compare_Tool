@@ -83,10 +83,42 @@ html, body {
 }
 #settings-toggle:hover { color: var(--text); }
 
+/* ===== Color Legend Strip ===== */
+#color-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 24px;
+  padding: 0 12px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.legend-critical { background: var(--diff-major); border: 1px solid #c62828; }
+.legend-minor { background: var(--diff-minor); border: 1px solid #c89a10; }
+.legend-noise { background: rgba(40, 40, 60, 0.5); border: 1px solid #444466; }
+.legend-added { background: var(--diff-added); border: 1px solid #3fb950; }
+.legend-removed { background: var(--diff-removed); border: 1px solid #c62828; }
+
 /* ===== Main Layout ===== */
 #main {
   display: flex;
-  height: calc(100vh - 44px - 28px);
+  height: calc(100vh - 44px - 24px - 28px);
 }
 
 /* ===== Editor Panes ===== */
@@ -345,10 +377,10 @@ html, body {
 /* ===== Settings Panel ===== */
 #settings-panel {
   position: fixed;
-  top: 44px;
+  top: 68px;
   right: -340px;
   width: 340px;
-  height: calc(100vh - 44px - 28px);
+  height: calc(100vh - 68px - 28px);
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   transition: right 0.2s ease;

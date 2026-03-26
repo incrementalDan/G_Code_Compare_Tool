@@ -200,7 +200,7 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
-  // Section Segmentation (for post-LCS noise detection)
+  // Section Segmentation (comment-based fallback)
   // =====================================================
 
   function segmentIntoSections(lines, parsedLines) {
@@ -238,6 +238,205 @@ const DiffEngine = (() => {
     }
 
     return sections;
+  }
+
+  // =====================================================
+  // Toolpath Segmentation (anchor-based, Brother Speedio)
+  // =====================================================
+
+  /**
+   * Detect toolpath boundaries using N## G100 T## anchor lines.
+   * Falls back to comment-based segmentation if no anchors found.
+   * Returns array of toolpath objects with metadata.
+   */
+  function segmentIntoToolpaths(lines, parsedLines) {
+    // Pass 1: Find anchor lines (N## G100 T##)
+    const anchors = [];
+    for (let i = 0; i < parsedLines.length; i++) {
+      const p = parsedLines[i];
+      if (p.lineNumber && p.tool !== null) {
+        const hasG100 = p.gCodes.some(g => {
+          const num = parseFloat(g.replace(/^G/i, ''));
+          return num === 100;
+        });
+        if (hasG100) {
+          anchors.push({
+            lineIndex: i,
+            toolNumber: p.tool,
+            nNumber: p.lineNumber,
+            spindleSpeed: p.spindle
+          });
+        }
+      }
+    }
+
+    // No anchors found — fall back to comment-based sections
+    if (anchors.length === 0) {
+      const sections = segmentIntoSections(lines, parsedLines);
+      return sections.map((s, idx) => ({
+        id: idx,
+        type: 'toolpath',
+        name: s.headerText || '',
+        opType: '',
+        toolNumber: null,
+        nNumber: null,
+        spindleSpeed: null,
+        startLine: s.startLine,
+        anchorLine: -1,
+        endLine: s.endLine
+      }));
+    }
+
+    // Pass 2: Expand boundaries backward from each anchor
+    const toolpaths = [];
+    const PREAMBLE_CODES = new Set(['G28', 'G53', 'G90', 'G49', 'G69', 'G54', 'G55', 'G56', 'G57', 'G58', 'G59', 'G53.1', 'G68.2']);
+    const PREAMBLE_MCODES = new Set(['M05', 'M09', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M01']);
+    const CUTTING_GCODES = new Set([1, 2, 3]);
+
+    for (let a = 0; a < anchors.length; a++) {
+      const anchor = anchors[a];
+      let preambleStart = anchor.lineIndex;
+
+      // Walk backward to find where preamble begins
+      const minLine = a > 0 ? anchors[a - 1].lineIndex + 1 : 0;
+      const maxBack = Math.max(minLine, anchor.lineIndex - 40);
+
+      for (let i = anchor.lineIndex - 1; i >= maxBack; i--) {
+        const p = parsedLines[i];
+
+        // Stop at cutting moves (G01/G02/G03 with axis values)
+        if (p.gCodes.length > 0) {
+          const hasCutting = p.gCodes.some(g => {
+            const num = parseFloat(g.replace(/^G/i, ''));
+            return CUTTING_GCODES.has(num);
+          });
+          if (hasCutting && Object.keys(p.axes).length > 0) break;
+        }
+
+        // Bare coordinate lines (no G/M) under modal G1/G2/G3 = cutting
+        if (p.gCodes.length === 0 && p.mCodes.length === 0 &&
+            Object.keys(p.axes).length > 0 && !p.isCommentOnly && !p.isBlank) {
+          break;
+        }
+
+        // Accept preamble-type lines
+        const isPreambleG = p.gCodes.some(g => {
+          const norm = g.replace(/^G0*/i, 'G').toUpperCase();
+          return PREAMBLE_CODES.has(norm);
+        });
+        const isPreambleM = p.mCodes.some(m => {
+          const norm = m.replace(/^M0*/i, 'M').toUpperCase();
+          return PREAMBLE_MCODES.has(norm);
+        });
+        const isRapid = p.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 0);
+
+        if (p.isBlank || p.isCommentOnly || isPreambleG || isPreambleM || isRapid ||
+            (p.gCodes.length === 0 && p.mCodes.length === 0 && Object.keys(p.axes).length === 0 && !p.isBlank)) {
+          preambleStart = i;
+        } else {
+          break;
+        }
+      }
+
+      // Extract metadata from lines between preambleStart and anchor
+      let name = '';
+      let opType = '';
+      let nameFound = false;
+      for (let i = preambleStart; i < anchor.lineIndex; i++) {
+        const p = parsedLines[i];
+        if (p.isCommentOnly && p.comment && p.comment.length >= 8) {
+          if (!nameFound) {
+            name = p.comment;
+            nameFound = true;
+          } else if (!opType) {
+            opType = p.comment;
+          }
+        }
+      }
+
+      toolpaths.push({
+        id: toolpaths.length,
+        type: 'toolpath',
+        name,
+        opType,
+        toolNumber: anchor.toolNumber,
+        nNumber: anchor.nNumber,
+        spindleSpeed: anchor.spindleSpeed,
+        startLine: preambleStart,
+        anchorLine: anchor.lineIndex,
+        endLine: lines.length - 1  // will be adjusted below
+      });
+    }
+
+    // Adjust endLines: each toolpath ends where the next one's preamble starts
+    for (let i = 0; i < toolpaths.length - 1; i++) {
+      toolpaths[i].endLine = toolpaths[i + 1].startLine - 1;
+    }
+    if (toolpaths.length > 0) {
+      toolpaths[toolpaths.length - 1].endLine = lines.length - 1;
+    }
+
+    // Add program preamble if first toolpath doesn't start at line 0
+    const result = [];
+    if (toolpaths.length > 0 && toolpaths[0].startLine > 0) {
+      result.push({
+        id: 0,
+        type: 'preamble',
+        name: 'Program Header',
+        opType: '',
+        toolNumber: null,
+        nNumber: null,
+        spindleSpeed: null,
+        startLine: 0,
+        anchorLine: -1,
+        endLine: toolpaths[0].startLine - 1
+      });
+    }
+
+    // Re-number IDs
+    for (const tp of toolpaths) {
+      tp.id = result.length;
+      result.push(tp);
+    }
+
+    // Check for program end (M30)
+    if (result.length > 0) {
+      const lastTp = result[result.length - 1];
+      for (let i = lastTp.endLine; i >= lastTp.anchorLine + 1; i--) {
+        const p = parsedLines[i];
+        if (p.mCodes.some(m => parseFloat(m.replace(/^M/i, '')) === 30)) {
+          // Split: find where the end sequence starts (walk back from M30)
+          let endStart = i;
+          for (let j = i - 1; j > lastTp.anchorLine; j--) {
+            const pj = parsedLines[j];
+            if (pj.isBlank || pj.mCodes.length > 0 ||
+                pj.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 28 || parseFloat(g.replace(/^G/i, '')) === 53) ||
+                (pj.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 100) && pj.lineNumber === null) ||
+                pj.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 90 || parseFloat(g.replace(/^G/i, '')) === 49)) {
+              endStart = j;
+            } else {
+              break;
+            }
+          }
+          lastTp.endLine = endStart - 1;
+          result.push({
+            id: result.length,
+            type: 'program_end',
+            name: 'Program End',
+            opType: '',
+            toolNumber: null,
+            nNumber: null,
+            spindleSpeed: null,
+            startLine: endStart,
+            anchorLine: -1,
+            endLine: lines.length - 1
+          });
+          break;
+        }
+      }
+    }
+
+    return result;
   }
 
   // =====================================================
@@ -601,7 +800,11 @@ const DiffEngine = (() => {
     const n = leftFP.length;
     const m = rightFP.length;
 
-    if (n === 0 && m === 0) return [];
+    // Segment into toolpaths (for noise detection and UI)
+    const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
+    const rightToolpaths = segmentIntoToolpaths(rightLines, rightParsed);
+
+    if (n === 0 && m === 0) return { ops: [], leftToolpaths, rightToolpaths };
 
     // Whole-file LCS on fingerprints
     const dp = buildLCSTable(leftFP, rightFP, n, m);
@@ -610,13 +813,13 @@ const DiffEngine = (() => {
     // Classify each op with token-level comparison
     const allOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap);
 
-    // Post-process: segment into sections and apply noise detection per section
+    // Post-process: apply noise detection per toolpath
     if (suppressNoise) {
       applyNoiseDetection(allOps, leftLines, leftParsed, rightLines, rightParsed,
-        noiseThreshold, minorThreshold, majorThreshold);
+        noiseThreshold, minorThreshold, majorThreshold, leftToolpaths, rightToolpaths);
     }
 
-    return allOps;
+    return { ops: allOps, leftToolpaths, rightToolpaths };
   }
 
   /**
@@ -689,15 +892,12 @@ const DiffEngine = (() => {
    * then apply noise detection per section.
    */
   function applyNoiseDetection(allOps, leftLines, leftParsed, rightLines, rightParsed,
-    noiseThreshold, minorThreshold, majorThreshold) {
+    noiseThreshold, minorThreshold, majorThreshold, leftToolpaths, rightToolpaths) {
 
-    // Build sections from left file (primary reference)
-    const leftSections = segmentIntoSections(leftLines, leftParsed);
+    // Use toolpath boundaries for grouping
+    const leftSections = leftToolpaths || segmentIntoToolpaths(leftLines, leftParsed);
+    const rightSections = rightToolpaths || segmentIntoToolpaths(rightLines, rightParsed);
 
-    // Also get right sections for added-only ops
-    const rightSections = segmentIntoSections(rightLines, rightParsed);
-
-    // Assign each op to a left section based on its leftIdx (or rightIdx for added lines)
     function getSectionIdx(lineIdx, sections) {
       for (let s = sections.length - 1; s >= 0; s--) {
         if (lineIdx >= sections[s].startLine) return s;
@@ -705,7 +905,7 @@ const DiffEngine = (() => {
       return 0;
     }
 
-    // Group ops by their section
+    // Group ops by their toolpath section
     const sectionOpsMap = {};
     for (const op of allOps) {
       let sIdx;
@@ -718,7 +918,7 @@ const DiffEngine = (() => {
       sectionOpsMap[sIdx].push(op);
     }
 
-    // Apply noise detection to each section group
+    // Apply noise detection to each toolpath group
     for (const ops of Object.values(sectionOpsMap)) {
       detectAdaptiveNoise(ops, noiseThreshold, minorThreshold, majorThreshold);
     }
@@ -749,6 +949,7 @@ const DiffEngine = (() => {
     fingerprint,
     classifyTokens,
     segmentIntoSections,
+    segmentIntoToolpaths,
     trackModalState,
     computeSemanticDiff,
     countStats
