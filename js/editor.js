@@ -171,12 +171,12 @@ const Editor = (() => {
     // Escape HTML
     let s = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-    // Apply syntax tokens (order matters)
-    // Comments first — they should override inner matches
+    // Apply syntax tokens (order matters — later rules can color inside earlier spans)
+    // Comments first
     s = s.replace(/(\([^)]*\))/g, '<span class="gcode-comment-paren">$1</span>');
     s = s.replace(/(;.*)$/, '<span class="gcode-comment-semi">$1</span>');
-    // Line numbers
-    s = s.replace(/^(N\d+)/i, '<span class="gcode-line-number">$1</span>');
+    // Line numbers (N)
+    s = s.replace(/\b(N\d+)\b/gi, '<span class="gcode-line-number">$1</span>');
     // Macro variables
     s = s.replace(/(#\d+)/g, '<span class="gcode-macro">$1</span>');
     // G codes
@@ -185,16 +185,22 @@ const Editor = (() => {
     s = s.replace(/\b(M\d+\.?\d*)\b/gi, '<span class="gcode-m">$1</span>');
     // Tool
     s = s.replace(/\b(T\d+)\b/gi, '<span class="gcode-t">$1</span>');
+    // H/D offsets
+    s = s.replace(/\b([HD]\d+)\b/gi, '<span class="gcode-hd">$1</span>');
     // Feed
-    s = s.replace(/\b(F\d+\.?\d*)\b/gi, '<span class="gcode-f">$1</span>');
+    s = s.replace(/\b(F-?\d+\.?\d*)\b/gi, '<span class="gcode-f">$1</span>');
     // Spindle
     s = s.replace(/\b(S\d+\.?\d*)\b/gi, '<span class="gcode-s">$1</span>');
-    // Axes XYZ
-    s = s.replace(/\b([XYZ]-?\d+\.?\d*)\b/gi, '<span class="gcode-xyz">$1</span>');
-    // Axes ABC
+    // X/Y axes (red)
+    s = s.replace(/\b([XY]-?\d+\.?\d*)\b/gi, '<span class="gcode-xy">$1</span>');
+    // Z axis (green)
+    s = s.replace(/\b(Z-?\d+\.?\d*)\b/gi, '<span class="gcode-z">$1</span>');
+    // Rotary ABC (green)
     s = s.replace(/\b([ABC]-?\d+\.?\d*)\b/gi, '<span class="gcode-abc">$1</span>');
-    // Arc IJK
+    // Arc IJK (yellow)
     s = s.replace(/\b([IJK]-?\d+\.?\d*)\b/gi, '<span class="gcode-ijk">$1</span>');
+    // Other params R, P, Q, L
+    s = s.replace(/\b([RPQL]-?\d+\.?\d*)\b/gi, '<span class="gcode-param">$1</span>');
 
     return s;
   }

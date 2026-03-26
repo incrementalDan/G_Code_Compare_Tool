@@ -4,13 +4,13 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg-primary: #1a1a2e;
-  --bg-panel: #16213e;
-  --bg-editor: #0f0f23;
-  --border: #2a2a3e;
-  --text: #e0e0e0;
-  --text-dim: #888;
-  --accent: #4a90d9;
+  --bg-primary: #1e1e1e;
+  --bg-panel: #252526;
+  --bg-editor: #1e1e1e;
+  --border: #3e3e42;
+  --text: #d4d4d4;
+  --text-dim: #858585;
+  --accent: #0e639c;
 
   --diff-major: #3b1111;
   --diff-minor: #2e2500;
@@ -59,7 +59,7 @@ html, body {
   align-items: center;
   gap: 4px;
   padding: 4px 10px;
-  background: #2a2a3e;
+  background: #333333;
   color: var(--text);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
@@ -68,10 +68,10 @@ html, body {
   transition: background 0.15s;
 }
 
-.btn:hover { background: #3a3a5e; }
-.btn:active { background: #4a4a6e; }
-.btn-accent { background: var(--accent); border-color: var(--accent); }
-.btn-accent:hover { background: #5a9de9; }
+.btn:hover { background: #444444; }
+.btn:active { background: #555555; }
+.btn-accent { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-accent:hover { background: #1177bb; }
 
 #settings-toggle {
   background: none;
@@ -189,8 +189,8 @@ html, body {
   min-width: 48px;
   text-align: right;
   padding-right: 8px;
-  color: #444;
-  background: #0d0d1a;
+  color: #858585;
+  background: #1e1e1e;
   border-right: 1px solid var(--border);
   user-select: none;
   font-size: 12px;
@@ -212,7 +212,7 @@ html, body {
 }
 
 .padding-line .line-content {
-  background: #0a0a18;
+  background: #1a1a1a;
 }
 
 /* Diff background colors on lines */
@@ -231,19 +231,22 @@ html, body {
 .diff-bg-removed { background-color: var(--diff-removed); }
 .diff-bg-removed .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
 
-/* G-code syntax tokens */
-.gcode-g { color: #6699cc; }
-.gcode-m { color: #cc99cc; }
-.gcode-xyz { color: #99cc99; }
-.gcode-abc { color: #66ccaa; }
-.gcode-ijk { color: #66cccc; }
-.gcode-f { color: #cc9966; }
-.gcode-s { color: #cc9966; }
-.gcode-t { color: #cc6666; }
-.gcode-macro { color: #cc66cc; }
-.gcode-comment-paren { color: #666666; font-style: italic; }
-.gcode-comment-semi { color: #666666; font-style: italic; }
-.gcode-line-number { color: #444444; }
+/* G-code syntax tokens — VSCode Dark+ theme */
+.gcode-g { color: #d4d4d4; font-weight: bold; }
+.gcode-m { color: #d4d4d4; font-weight: bold; }
+.gcode-xy { color: #ce9178; }
+.gcode-z { color: #b5cea8; }
+.gcode-abc { color: #b5cea8; }
+.gcode-ijk { color: #dcdcaa; }
+.gcode-f { color: #dcdcaa; }
+.gcode-s { color: #dcdcaa; }
+.gcode-t { color: #569cd6; }
+.gcode-hd { color: #d4d4d4; }
+.gcode-param { color: #d4d4d4; }
+.gcode-macro { color: #c586c0; }
+.gcode-comment-paren { color: #6a9955; font-style: italic; }
+.gcode-comment-semi { color: #6a9955; font-style: italic; }
+.gcode-line-number { color: #c586c0; }
 
 /* ===== Center Gutter ===== */
 #diff-gutter {
@@ -269,7 +272,7 @@ html, body {
 .diff-nav-btn {
   width: 28px;
   height: 20px;
-  background: #2a2a3e;
+  background: #333333;
   border: 1px solid var(--border);
   color: var(--text-dim);
   font-size: 10px;
@@ -279,7 +282,7 @@ html, body {
   justify-content: center;
 }
 
-.diff-nav-btn:hover { background: #3a3a5e; color: var(--text); }
+.diff-nav-btn:hover { background: #444444; color: var(--text); }
 
 #diff-markers {
   flex: 1;
@@ -369,7 +372,7 @@ html, body {
 .stepper-btn {
   width: 24px;
   height: 24px;
-  background: #2a2a3e;
+  background: #333333;
   border: 1px solid var(--border);
   color: var(--text);
   font-size: 14px;
@@ -380,7 +383,7 @@ html, body {
   font-family: var(--font-mono);
 }
 
-.stepper-btn:hover { background: #3a3a5e; }
+.stepper-btn:hover { background: #444444; }
 
 .stepper-value {
   font-size: 12px;
@@ -422,5 +425,5 @@ html, body {
 /* ===== Scrollbar styling ===== */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
-::-webkit-scrollbar-thumb { background: #3a3a5e; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #4a4a6e; }
+::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #555555; }
