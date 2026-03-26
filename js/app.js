@@ -6,16 +6,15 @@
 const App = (() => {
   // === State ===
   let settings = {
-    ignoreParenComments: true,
+    ignoreParenComments: false,
     ignoreSemiComments: true,
     ignoreWhitespace: true,
     ignoreCase: true,
     normalizeGMCodes: true,
     ignoreLineNumbers: true,
     ignoreBlockDelete: false,
-    minorThreshold: 0.0002,
-    majorThreshold: 0.0005,
-    hideMinor: false,
+    suppressNoise: true,
+    noiseThreshold: 10,
     syncScroll: true
   };
 
@@ -76,13 +75,12 @@ N120 M30`;
   }
 
   // === Settings persistence ===
-  const SETTINGS_VERSION = 2; // bump when defaults change to clear stale localStorage
+  const SETTINGS_VERSION = 3; // bump when defaults change
 
   function loadSettings() {
     try {
       const ver = parseInt(localStorage.getItem('gcode-compare-settings-version') || '0');
       if (ver < SETTINGS_VERSION) {
-        // Stale settings — clear and use new defaults
         localStorage.removeItem('gcode-compare-settings');
         localStorage.setItem('gcode-compare-settings-version', String(SETTINGS_VERSION));
         return;
@@ -108,10 +106,9 @@ N120 M30`;
     document.getElementById('opt-normalize-gm').checked = settings.normalizeGMCodes;
     document.getElementById('opt-ignore-line-numbers').checked = settings.ignoreLineNumbers;
     document.getElementById('opt-ignore-block-delete').checked = settings.ignoreBlockDelete;
-    document.getElementById('opt-hide-minor').checked = settings.hideMinor;
+    document.getElementById('opt-suppress-noise').checked = settings.suppressNoise;
+    document.getElementById('noise-threshold-value').textContent = settings.noiseThreshold;
     document.getElementById('opt-sync-scroll').checked = settings.syncScroll;
-    document.getElementById('minor-threshold-value').textContent = settings.minorThreshold.toFixed(4);
-    document.getElementById('major-threshold-value').textContent = settings.majorThreshold.toFixed(4);
   }
 
   // === Button bindings ===
@@ -153,7 +150,7 @@ N120 M30`;
       'opt-normalize-gm': 'normalizeGMCodes',
       'opt-ignore-line-numbers': 'ignoreLineNumbers',
       'opt-ignore-block-delete': 'ignoreBlockDelete',
-      'opt-hide-minor': 'hideMinor',
+      'opt-suppress-noise': 'suppressNoise',
       'opt-sync-scroll': 'syncScroll'
     };
 
@@ -169,31 +166,17 @@ N120 M30`;
       });
     }
 
-    // Stepper buttons
+    // Noise threshold stepper
     document.querySelectorAll('.stepper-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const target = btn.dataset.target;
         const dir = parseInt(btn.dataset.dir);
-        const step = 0.0001;
 
-        if (target === 'minor') {
-          settings.minorThreshold = Math.max(0, Math.min(0.01,
-            parseFloat((settings.minorThreshold + dir * step).toFixed(4))
+        if (target === 'noise') {
+          settings.noiseThreshold = Math.max(3, Math.min(50,
+            settings.noiseThreshold + dir
           ));
-          // Clamp: minor must be < major
-          if (settings.minorThreshold >= settings.majorThreshold) {
-            settings.minorThreshold = parseFloat((settings.majorThreshold - step).toFixed(4));
-          }
-          document.getElementById('minor-threshold-value').textContent = settings.minorThreshold.toFixed(4);
-        } else {
-          settings.majorThreshold = Math.max(0, Math.min(0.1,
-            parseFloat((settings.majorThreshold + dir * step).toFixed(4))
-          ));
-          // Clamp: major must be > minor
-          if (settings.majorThreshold <= settings.minorThreshold) {
-            settings.majorThreshold = parseFloat((settings.minorThreshold + step).toFixed(4));
-          }
-          document.getElementById('major-threshold-value').textContent = settings.majorThreshold.toFixed(4);
+          document.getElementById('noise-threshold-value').textContent = settings.noiseThreshold;
         }
 
         saveSettings();
@@ -223,46 +206,46 @@ N120 M30`;
     if (!leftText && !rightText) {
       currentDiff = [];
       clearDecorations();
-      updateStatusBar(0, 0, 0, 0);
+      updateStatusBar({ critical: 0, noise: 0, added: 0, removed: 0 }, 0, 0);
       return;
     }
 
     const leftLines = leftText.split('\n');
     const rightLines = rightText.split('\n');
 
-    // Run diff engine
-    currentDiff = DiffEngine.computeDiff(
-      leftLines, rightLines,
-      settings,
-      settings.minorThreshold,
-      settings.majorThreshold
-    );
+    // Run semantic diff engine
+    currentDiff = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
+      rules: settings,
+      noiseThreshold: settings.noiseThreshold,
+      suppressNoise: settings.suppressNoise
+    });
 
     // Build decorations AND alignment padding
-    // Walk through diff ops and track where each side needs padding
-    // to keep matching lines at the same visual row.
     const leftDecos = [];
     const rightDecos = [];
-    const leftPadding = {};  // lineIdx -> # of blank lines to insert BEFORE this line
-    const rightPadding = {}; // lineIdx -> # of blank lines to insert BEFORE this line
+    const leftPadding = {};
+    const rightPadding = {};
     diffPositions = [];
-
-    // We need to figure out alignment. Process diff ops sequentially.
-    // For each op, track the "display row" on each side.
-    // When one side has a line and the other doesn't (added/removed),
-    // the side that doesn't gets a padding line.
-    //
-    // We accumulate pending padding and attach it to the next real line on that side.
 
     let leftPendingPad = 0;
     let rightPendingPad = 0;
-    let lastLeftIdx = -1;
-    let lastRightIdx = -1;
+
+    // Map semantic types to decoration types
+    function decoType(opType) {
+      switch (opType) {
+        case 'critical': case 'coordinate-z': return 'major';
+        case 'coordinate': case 'noise': return 'noise';
+        case 'added': return 'added';
+        case 'removed': return 'removed';
+        default: return opType;
+      }
+    }
 
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
+      const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
 
-      if (op.type === 'equal' || op.type === 'major' || op.type === 'minor') {
+      if (op.type === 'equal' || hasBothSides) {
         // Both sides have a line — flush any pending padding
         if (leftPendingPad > 0 && op.leftIdx !== undefined) {
           leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
@@ -273,38 +256,26 @@ N120 M30`;
           rightPendingPad = 0;
         }
 
-        if (op.type === 'major') {
-          leftDecos.push({ line: op.leftIdx, type: 'major' });
-          rightDecos.push({ line: op.rightIdx, type: 'major' });
-          diffPositions.push(i);
-        } else if (op.type === 'minor') {
-          if (!settings.hideMinor) {
-            leftDecos.push({ line: op.leftIdx, type: 'minor' });
-            rightDecos.push({ line: op.rightIdx, type: 'minor' });
-          }
+        if (op.type !== 'equal') {
+          const dt = decoType(op.type);
+          leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
+          rightDecos.push({ line: op.rightIdx, type: dt, tokenDiffs: op.tokenDiffs });
           diffPositions.push(i);
         }
-        lastLeftIdx = op.leftIdx;
-        lastRightIdx = op.rightIdx;
 
       } else if (op.type === 'added') {
-        // Line only on right — left side needs a padding line
         rightDecos.push({ line: op.rightIdx, type: 'added' });
         diffPositions.push(i);
         leftPendingPad++;
-        lastRightIdx = op.rightIdx;
 
       } else if (op.type === 'removed') {
-        // Line only on left — right side needs a padding line
         leftDecos.push({ line: op.leftIdx, type: 'removed' });
         diffPositions.push(i);
         rightPendingPad++;
-        lastLeftIdx = op.leftIdx;
       }
     }
 
-    // If there's trailing padding, attach it after the last line
-    // by adding it to a sentinel line index (the line count)
+    // Trailing padding
     if (leftPendingPad > 0) {
       leftPadding[leftLines.length] = (leftPadding[leftLines.length] || 0) + leftPendingPad;
     }
@@ -320,7 +291,7 @@ N120 M30`;
 
     // Update status bar
     const stats = DiffEngine.countStats(currentDiff);
-    updateStatusBar(stats.major, stats.minor, leftLines.length, rightLines.length);
+    updateStatusBar(stats, leftLines.length, rightLines.length);
 
     // Reset diff navigation
     currentDiffIndex = -1;
@@ -352,9 +323,9 @@ N120 M30`;
     container.innerHTML = html;
   }
 
-  function updateStatusBar(major, minor, leftLines, rightLines) {
-    document.getElementById('stat-major').textContent = major;
-    document.getElementById('stat-minor').textContent = minor;
+  function updateStatusBar(stats, leftLines, rightLines) {
+    document.getElementById('stat-major').textContent = stats.critical;
+    document.getElementById('stat-minor').textContent = stats.noise;
     document.getElementById('stat-lines-left').textContent = leftLines;
     document.getElementById('stat-lines-right').textContent = rightLines;
 
@@ -428,14 +399,13 @@ N120 M30`;
     document.getElementById('settings-panel').classList.toggle('open');
   }
 
-  // === Page-level drag and drop (for dropping anywhere) ===
+  // === Page-level drag and drop ===
   function setupGlobalDragDrop() {
     document.body.addEventListener('dragover', (e) => {
       e.preventDefault();
     });
 
     document.body.addEventListener('drop', (e) => {
-      // Only handle if not caught by a specific pane
       if (e.target.closest('.editor-container')) return;
       e.preventDefault();
       const files = e.dataTransfer.files;
