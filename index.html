@@ -55,10 +55,10 @@
   <!-- Settings panel (slide-out) -->
   <div id="settings-panel">
     <div class="settings-section">
-      <h3>Ignore Rules</h3>
+      <h3>Comparison Rules</h3>
       <div class="setting-row">
         <label for="opt-ignore-paren-comments">Ignore comments ( )</label>
-        <input type="checkbox" id="opt-ignore-paren-comments" checked>
+        <input type="checkbox" id="opt-ignore-paren-comments">
       </div>
       <div class="setting-row">
         <label for="opt-ignore-semi-comments">Ignore comments ;</label>
@@ -77,36 +77,28 @@
         <input type="checkbox" id="opt-normalize-gm" checked>
       </div>
       <div class="setting-row">
-        <label for="opt-ignore-line-numbers">Ignore line numbers</label>
-        <input type="checkbox" id="opt-ignore-line-numbers">
+        <label for="opt-ignore-line-numbers">Ignore N-numbers</label>
+        <input type="checkbox" id="opt-ignore-line-numbers" checked>
       </div>
       <div class="setting-row">
-        <label for="opt-ignore-block-delete">Ignore block delete</label>
+        <label for="opt-ignore-block-delete">Ignore block delete /</label>
         <input type="checkbox" id="opt-ignore-block-delete">
       </div>
     </div>
 
     <div class="settings-section">
-      <h3>Numeric Tolerance</h3>
+      <h3>Adaptive Toolpath Noise</h3>
       <div class="setting-row">
-        <label>Minor threshold</label>
-        <div class="stepper">
-          <button class="stepper-btn" data-target="minor" data-dir="-1">-</button>
-          <span class="stepper-value" id="minor-threshold-value">0.0002</span>
-          <button class="stepper-btn" data-target="minor" data-dir="1">+</button>
-        </div>
+        <label for="opt-suppress-noise">Suppress coordinate noise</label>
+        <input type="checkbox" id="opt-suppress-noise" checked>
       </div>
       <div class="setting-row">
-        <label>Major threshold</label>
+        <label>Noise threshold (lines)</label>
         <div class="stepper">
-          <button class="stepper-btn" data-target="major" data-dir="-1">-</button>
-          <span class="stepper-value" id="major-threshold-value">0.0005</span>
-          <button class="stepper-btn" data-target="major" data-dir="1">+</button>
+          <button class="stepper-btn" data-target="noise" data-dir="-1">-</button>
+          <span class="stepper-value" id="noise-threshold-value">10</span>
+          <button class="stepper-btn" data-target="noise" data-dir="1">+</button>
         </div>
-      </div>
-      <div class="setting-row">
-        <label for="opt-hide-minor">Hide minor differences</label>
-        <input type="checkbox" id="opt-hide-minor">
       </div>
     </div>
 
@@ -122,8 +114,8 @@
   <!-- Status bar -->
   <div id="status-bar">
     <div id="status-left">
-      <span>Major: <span class="status-major" id="stat-major">0</span></span>
-      <span>Minor: <span class="status-minor" id="stat-minor">0</span></span>
+      <span>Critical: <span class="status-major" id="stat-major">0</span></span>
+      <span>Noise: <span class="status-noise" id="stat-minor">0</span></span>
       <span>Lines: <span id="stat-lines-left">0</span> / <span id="stat-lines-right">0</span></span>
     </div>
     <div id="status-center"></div>
