@@ -279,21 +279,6 @@ const DiffEngine = (() => {
     if (arcLetters) parts.push(arcLetters);
     if (rotaryLetters) parts.push(rotaryLetters);
 
-    // For bare coordinate lines, add binned coordinate values to distinguish spatial regions
-    if (!hasGM && hasCoords) {
-      const binned = [];
-      for (const [k, v] of Object.entries(parsed.axes).sort()) {
-        binned.push(k + Math.round(v));
-      }
-      for (const [k, v] of Object.entries(parsed.arcParams).sort()) {
-        binned.push(k + Math.round(v));
-      }
-      for (const [k, v] of Object.entries(parsed.rotary).sort()) {
-        binned.push(k + Math.round(v));
-      }
-      if (binned.length > 0) parts.push(binned.join(''));
-    }
-
     // F/S/T/H/D presence
     if (parsed.feed !== null) parts.push('F');
     if (parsed.spindle !== null) parts.push('S');

@@ -202,7 +202,7 @@ html, body {
   min-width: 0;
 }
 
-/* Padding lines for alignment */
+/* Padding lines for alignment — VSCode-style hatched placeholders */
 .padding-line {
   background: var(--bg-editor);
 }
@@ -213,6 +213,44 @@ html, body {
 
 .padding-line .line-content {
   background: #1a1a1a;
+}
+
+/* Left side padding = additions missing here (green hatching) */
+#left-editor .padding-line {
+  background-color: rgba(13, 40, 24, 0.4);
+}
+#left-editor .padding-line .line-num {
+  background-color: rgba(13, 40, 24, 0.4);
+}
+#left-editor .padding-line .line-content {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    rgba(63, 185, 80, 0.08) 4px,
+    rgba(63, 185, 80, 0.08) 8px
+  );
+  border-left: 3px solid rgba(63, 185, 80, 0.3);
+  padding-left: 5px;
+}
+
+/* Right side padding = removals missing here (red hatching) */
+#right-editor .padding-line {
+  background-color: rgba(45, 14, 14, 0.4);
+}
+#right-editor .padding-line .line-num {
+  background-color: rgba(45, 14, 14, 0.4);
+}
+#right-editor .padding-line .line-content {
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    rgba(198, 40, 40, 0.08) 4px,
+    rgba(198, 40, 40, 0.08) 8px
+  );
+  border-left: 3px solid rgba(198, 40, 40, 0.3);
+  padding-left: 5px;
 }
 
 /* Diff background colors on lines */

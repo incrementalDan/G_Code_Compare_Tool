@@ -219,6 +219,18 @@ N120 M30`;
     });
   }
 
+  // === Helpers ===
+  function decoType(opType) {
+    switch (opType) {
+      case 'critical': case 'coordinate-z': return 'major';
+      case 'minor': return 'minor';
+      case 'coordinate': case 'noise': return 'noise';
+      case 'added': return 'added';
+      case 'removed': return 'removed';
+      default: return opType;
+    }
+  }
+
   // === Core diff execution ===
   function runDiff() {
     const leftText = Editor.getValue('left');
@@ -253,25 +265,14 @@ N120 M30`;
     let leftPendingPad = 0;
     let rightPendingPad = 0;
 
-    // Map semantic types to decoration types
-    function decoType(opType) {
-      switch (opType) {
-        case 'critical': case 'coordinate-z': return 'major';
-        case 'minor': return 'minor';
-        case 'coordinate': case 'noise': return 'noise';
-        case 'added': return 'added';
-        case 'removed': return 'removed';
-        default: return opType;
-      }
-    }
-
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
+      const isNoise = op.type === 'noise' || op.type === 'coordinate';
 
       // Skip noise lines entirely when hideNoise is on
-      if (settings.hideNoise && (op.type === 'noise' || op.type === 'coordinate')) {
-        if (hasBothSides) continue; // paired noise line — skip
+      if (settings.hideNoise && isNoise && hasBothSides) {
+        continue;
       }
 
       if (op.type === 'equal' || hasBothSides) {
@@ -289,7 +290,10 @@ N120 M30`;
           const dt = decoType(op.type);
           leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
           rightDecos.push({ line: op.rightIdx, type: dt, tokenDiffs: op.tokenDiffs });
-          diffPositions.push(i);
+          // Don't add noise to navigation targets when hideNoise is on
+          if (!(settings.hideNoise && isNoise)) {
+            diffPositions.push(i);
+          }
         }
 
       } else if (op.type === 'added') {
@@ -316,7 +320,7 @@ N120 M30`;
     Editor.setDecorations('right', rightDecos, rightPadding);
 
     // Update diff markers in center gutter
-    updateDiffMarkers(leftDecos, rightDecos, leftLines.length, rightLines.length);
+    updateDiffMarkers();
 
     // Update status bar
     const stats = DiffEngine.countStats(currentDiff);
@@ -332,23 +336,27 @@ N120 M30`;
     document.getElementById('diff-markers').innerHTML = '';
   }
 
-  function updateDiffMarkers(leftDecos, rightDecos, leftCount, rightCount) {
+  function updateDiffMarkers() {
     const container = document.getElementById('diff-markers');
     const height = container.clientHeight || 400;
-    const totalLines = Math.max(leftCount, rightCount, 1);
+    const total = currentDiff.length;
+    if (total === 0) { container.innerHTML = ''; return; }
 
     let html = '';
-    const allDecos = [...leftDecos, ...rightDecos];
     const seen = new Set();
 
-    for (const d of allDecos) {
-      // Filter noise from gutter markers
-      if (d.type === 'noise') continue;
-      const key = `${d.line}-${d.type}`;
+    for (let i = 0; i < currentDiff.length; i++) {
+      const op = currentDiff[i];
+      if (op.type === 'equal') continue;
+      // Filter noise from gutter
+      if (op.type === 'noise' || op.type === 'coordinate') continue;
+
+      const dt = decoType(op.type);
+      const top = Math.round((i / total) * height);
+      const key = `${top}-${dt}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const top = (d.line / totalLines) * height;
-      html += `<div class="diff-marker ${d.type}" style="top:${top}px"></div>`;
+      html += `<div class="diff-marker ${dt}" style="top:${top}px"></div>`;
     }
 
     container.innerHTML = html;
