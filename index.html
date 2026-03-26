@@ -88,6 +88,7 @@
 
     <div class="settings-section">
       <h3>Adaptive Toolpath Noise</h3>
+      <p class="setting-description">Sections with many coordinate-only changes (from adaptive/HEM toolpaths) are treated as noise. Coordinate differences in non-noise sections use the tolerance thresholds below.</p>
       <div class="setting-row">
         <label for="opt-suppress-noise">Suppress coordinate noise</label>
         <input type="checkbox" id="opt-suppress-noise" checked>
@@ -98,6 +99,31 @@
           <button class="stepper-btn" data-target="noise" data-dir="-1">-</button>
           <span class="stepper-value" id="noise-threshold-value">10</span>
           <button class="stepper-btn" data-target="noise" data-dir="1">+</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label for="opt-hide-noise">Hide noise lines entirely</label>
+        <input type="checkbox" id="opt-hide-noise">
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Coordinate Tolerances</h3>
+      <p class="setting-description">In non-noise sections, coordinate changes within the minor threshold are hidden. Changes between minor and major are shown as amber (minor). Changes beyond major are shown as red (critical).</p>
+      <div class="setting-row">
+        <label>Minor threshold</label>
+        <div class="stepper">
+          <button class="stepper-btn" data-target="minor-tol" data-dir="-1">-</button>
+          <span class="stepper-value" id="minor-threshold-value">0.001</span>
+          <button class="stepper-btn" data-target="minor-tol" data-dir="1">+</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Major threshold</label>
+        <div class="stepper">
+          <button class="stepper-btn" data-target="major-tol" data-dir="-1">-</button>
+          <span class="stepper-value" id="major-threshold-value">0.01</span>
+          <button class="stepper-btn" data-target="major-tol" data-dir="1">+</button>
         </div>
       </div>
     </div>
@@ -115,7 +141,8 @@
   <div id="status-bar">
     <div id="status-left">
       <span>Critical: <span class="status-major" id="stat-major">0</span></span>
-      <span>Noise: <span class="status-noise" id="stat-minor">0</span></span>
+      <span>Minor: <span class="status-minor-count" id="stat-minor-count">0</span></span>
+      <span>Noise: <span class="status-noise" id="stat-noise">0</span></span>
       <span>Lines: <span id="stat-lines-left">0</span> / <span id="stat-lines-right">0</span></span>
     </div>
     <div id="status-center"></div>

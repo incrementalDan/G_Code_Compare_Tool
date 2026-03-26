@@ -15,6 +15,9 @@ const App = (() => {
     ignoreBlockDelete: false,
     suppressNoise: true,
     noiseThreshold: 10,
+    hideNoise: false,
+    minorThreshold: 0.001,
+    majorThreshold: 0.01,
     syncScroll: true
   };
 
@@ -75,7 +78,7 @@ N120 M30`;
   }
 
   // === Settings persistence ===
-  const SETTINGS_VERSION = 3; // bump when defaults change
+  const SETTINGS_VERSION = 4; // bump when defaults change
 
   function loadSettings() {
     try {
@@ -108,6 +111,9 @@ N120 M30`;
     document.getElementById('opt-ignore-block-delete').checked = settings.ignoreBlockDelete;
     document.getElementById('opt-suppress-noise').checked = settings.suppressNoise;
     document.getElementById('noise-threshold-value').textContent = settings.noiseThreshold;
+    document.getElementById('opt-hide-noise').checked = settings.hideNoise;
+    document.getElementById('minor-threshold-value').textContent = settings.minorThreshold;
+    document.getElementById('major-threshold-value').textContent = settings.majorThreshold;
     document.getElementById('opt-sync-scroll').checked = settings.syncScroll;
   }
 
@@ -151,6 +157,7 @@ N120 M30`;
       'opt-ignore-line-numbers': 'ignoreLineNumbers',
       'opt-ignore-block-delete': 'ignoreBlockDelete',
       'opt-suppress-noise': 'suppressNoise',
+      'opt-hide-noise': 'hideNoise',
       'opt-sync-scroll': 'syncScroll'
     };
 
@@ -166,7 +173,7 @@ N120 M30`;
       });
     }
 
-    // Noise threshold stepper
+    // Stepper buttons for thresholds
     document.querySelectorAll('.stepper-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const target = btn.dataset.target;
@@ -177,6 +184,20 @@ N120 M30`;
             settings.noiseThreshold + dir
           ));
           document.getElementById('noise-threshold-value').textContent = settings.noiseThreshold;
+        } else if (target === 'minor-tol') {
+          const steps = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1];
+          let idx = steps.indexOf(settings.minorThreshold);
+          if (idx < 0) idx = 2;
+          idx = Math.max(0, Math.min(steps.length - 1, idx + dir));
+          settings.minorThreshold = steps[idx];
+          document.getElementById('minor-threshold-value').textContent = settings.minorThreshold;
+        } else if (target === 'major-tol') {
+          const steps = [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0];
+          let idx = steps.indexOf(settings.majorThreshold);
+          if (idx < 0) idx = 2;
+          idx = Math.max(0, Math.min(steps.length - 1, idx + dir));
+          settings.majorThreshold = steps[idx];
+          document.getElementById('major-threshold-value').textContent = settings.majorThreshold;
         }
 
         saveSettings();
@@ -206,7 +227,7 @@ N120 M30`;
     if (!leftText && !rightText) {
       currentDiff = [];
       clearDecorations();
-      updateStatusBar({ critical: 0, noise: 0, added: 0, removed: 0 }, 0, 0);
+      updateStatusBar({ critical: 0, minor: 0, noise: 0, added: 0, removed: 0 }, 0, 0);
       return;
     }
 
@@ -217,7 +238,9 @@ N120 M30`;
     currentDiff = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
       rules: settings,
       noiseThreshold: settings.noiseThreshold,
-      suppressNoise: settings.suppressNoise
+      suppressNoise: settings.suppressNoise,
+      minorThreshold: settings.minorThreshold,
+      majorThreshold: settings.majorThreshold
     });
 
     // Build decorations AND alignment padding
@@ -234,6 +257,7 @@ N120 M30`;
     function decoType(opType) {
       switch (opType) {
         case 'critical': case 'coordinate-z': return 'major';
+        case 'minor': return 'minor';
         case 'coordinate': case 'noise': return 'noise';
         case 'added': return 'added';
         case 'removed': return 'removed';
@@ -244,6 +268,11 @@ N120 M30`;
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
+
+      // Skip noise lines entirely when hideNoise is on
+      if (settings.hideNoise && (op.type === 'noise' || op.type === 'coordinate')) {
+        if (hasBothSides) continue; // paired noise line — skip
+      }
 
       if (op.type === 'equal' || hasBothSides) {
         // Both sides have a line — flush any pending padding
@@ -313,6 +342,8 @@ N120 M30`;
     const seen = new Set();
 
     for (const d of allDecos) {
+      // Filter noise from gutter markers
+      if (d.type === 'noise') continue;
       const key = `${d.line}-${d.type}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -325,7 +356,8 @@ N120 M30`;
 
   function updateStatusBar(stats, leftLines, rightLines) {
     document.getElementById('stat-major').textContent = stats.critical;
-    document.getElementById('stat-minor').textContent = stats.noise;
+    document.getElementById('stat-minor-count').textContent = stats.minor;
+    document.getElementById('stat-noise').textContent = stats.noise;
     document.getElementById('stat-lines-left').textContent = leftLines;
     document.getElementById('stat-lines-right').textContent = rightLines;
 

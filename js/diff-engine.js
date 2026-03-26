@@ -1,6 +1,6 @@
 /**
  * G-Code Semantic Diff Engine
- * Token-aware parsing, section matching, structural LCS, and noise detection.
+ * Token-aware parsing, whole-file LCS, modal state fingerprints, and noise detection.
  */
 
 const DiffEngine = (() => {
@@ -9,17 +9,13 @@ const DiffEngine = (() => {
   // Token Parser
   // =====================================================
 
-  /**
-   * Parse a G-code line into semantic tokens.
-   * Returns structured object with typed fields and raw token list.
-   */
   function parseGCodeLine(line) {
     const result = {
       gCodes: [],
       mCodes: [],
-      axes: {},       // X, Y, Z
-      arcParams: {},  // I, J, K
-      rotary: {},     // A, B, C
+      axes: {},
+      arcParams: {},
+      rotary: {},
       feed: null,
       spindle: null,
       tool: null,
@@ -31,7 +27,7 @@ const DiffEngine = (() => {
       blockDelete: false,
       isBlank: false,
       isCommentOnly: false,
-      tokens: []      // [{type, text, value, start, end}]
+      tokens: []
     };
 
     const trimmed = line.trim();
@@ -44,7 +40,6 @@ const DiffEngine = (() => {
     const src = line;
     const len = src.length;
 
-    // Block delete
     if (src[pos] === '/') {
       result.blockDelete = true;
       result.tokens.push({ type: 'blockDelete', text: '/', start: 0, end: 1 });
@@ -52,10 +47,8 @@ const DiffEngine = (() => {
     }
 
     while (pos < len) {
-      // Skip whitespace
       if (/\s/.test(src[pos])) { pos++; continue; }
 
-      // Parenthetical comment
       if (src[pos] === '(') {
         const end = src.indexOf(')', pos);
         const closePos = end >= 0 ? end + 1 : len;
@@ -67,7 +60,6 @@ const DiffEngine = (() => {
         continue;
       }
 
-      // Semicolon comment
       if (src[pos] === ';') {
         const text = src.substring(pos);
         const inner = text.substring(1).trim();
@@ -77,7 +69,6 @@ const DiffEngine = (() => {
         continue;
       }
 
-      // Macro variable: #NNN or #[expr]
       if (src[pos] === '#') {
         const macroMatch = src.substring(pos).match(/^#\d+\s*=?\s*[^A-Z(;]*/i);
         if (macroMatch) {
@@ -87,7 +78,6 @@ const DiffEngine = (() => {
           pos += text.length;
           continue;
         }
-        // Simple #NNN reference
         const refMatch = src.substring(pos).match(/^#\d+/);
         if (refMatch) {
           result.macros.push(refMatch[0]);
@@ -99,7 +89,6 @@ const DiffEngine = (() => {
         continue;
       }
 
-      // O-word (program number)
       if ((src[pos] === 'O' || src[pos] === 'o') && /\d/.test(src[pos + 1] || '')) {
         const m = src.substring(pos).match(/^[oO]\d+/);
         if (m) {
@@ -109,7 +98,6 @@ const DiffEngine = (() => {
         }
       }
 
-      // Letter + number tokens
       const tokenMatch = src.substring(pos).match(/^([a-zA-Z])(-?\d+\.?\d*)/);
       if (tokenMatch) {
         const letter = tokenMatch[1].toUpperCase();
@@ -174,11 +162,9 @@ const DiffEngine = (() => {
         continue;
       }
 
-      // % or other single chars
       pos++;
     }
 
-    // Determine if this is a comment-only line
     const nonCommentTokens = result.tokens.filter(t => t.type !== 'comment' && t.type !== 'lineNumber' && t.type !== 'blockDelete');
     result.isCommentOnly = nonCommentTokens.length === 0 && result.comment !== null;
 
@@ -186,23 +172,44 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
-  // Section Segmentation
+  // Modal G-Code State Tracking
   // =====================================================
 
+  const MODAL_MOTION_CODES = new Set([0, 1, 2, 3]);
+
   /**
-   * Segment a file into toolpath sections based on comment headers.
-   * A section header is a comment-only line with 10+ chars of comment text.
+   * Track modal G-code state across a file.
+   * Returns array of modal G-code strings per line (e.g. "G1").
    */
+  function trackModalState(parsedLines) {
+    const modalStates = [];
+    let currentModal = null;
+
+    for (let i = 0; i < parsedLines.length; i++) {
+      const p = parsedLines[i];
+      for (const g of p.gCodes) {
+        const num = parseFloat(g.replace(/^G/i, ''));
+        if (MODAL_MOTION_CODES.has(num)) {
+          currentModal = 'G' + num;
+        }
+      }
+      modalStates.push(currentModal);
+    }
+
+    return modalStates;
+  }
+
+  // =====================================================
+  // Section Segmentation (for post-LCS noise detection)
+  // =====================================================
+
   function segmentIntoSections(lines, parsedLines) {
     const sections = [];
     let currentSection = null;
 
     for (let i = 0; i < parsedLines.length; i++) {
       const p = parsedLines[i];
-
-      // Section header: comment-only line with substantial text
       if (p.isCommentOnly && p.comment && p.comment.length >= 10) {
-        // Close previous section
         if (currentSection) {
           currentSection.endLine = i - 1;
           sections.push(currentSection);
@@ -216,13 +223,11 @@ const DiffEngine = (() => {
       }
     }
 
-    // Close last section
     if (currentSection) {
       currentSection.endLine = lines.length - 1;
       sections.push(currentSection);
     }
 
-    // If no sections found, treat the whole file as one section
     if (sections.length === 0) {
       sections.push({
         headerText: '',
@@ -235,88 +240,15 @@ const DiffEngine = (() => {
     return sections;
   }
 
-  /**
-   * Match sections between two files by header text similarity.
-   */
-  function matchSections(leftSections, rightSections) {
-    const matches = [];
-    const usedRight = new Set();
-
-    for (const ls of leftSections) {
-      let bestMatch = null;
-      let bestScore = 0;
-
-      for (let ri = 0; ri < rightSections.length; ri++) {
-        if (usedRight.has(ri)) continue;
-        const rs = rightSections[ri];
-        const score = headerSimilarity(ls.headerText, rs.headerText);
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = ri;
-        }
-      }
-
-      if (bestMatch !== null && bestScore > 0.4) {
-        matches.push({ left: ls, right: rightSections[bestMatch], score: bestScore });
-        usedRight.add(bestMatch);
-      } else {
-        matches.push({ left: ls, right: null });
-      }
-    }
-
-    // Unmatched right sections
-    for (let ri = 0; ri < rightSections.length; ri++) {
-      if (!usedRight.has(ri)) {
-        matches.push({ left: null, right: rightSections[ri] });
-      }
-    }
-
-    return matches;
-  }
-
-  /**
-   * Compute similarity between two header strings (0-1).
-   * Uses longest common substring ratio.
-   */
-  function headerSimilarity(a, b) {
-    if (!a && !b) return 1;
-    if (!a || !b) return 0;
-    const la = a.toLowerCase();
-    const lb = b.toLowerCase();
-    if (la === lb) return 1;
-
-    // Longest common substring
-    const n = la.length, m = lb.length;
-    let maxLen = 0;
-    let prev = new Uint16Array(m + 1);
-    let curr = new Uint16Array(m + 1);
-
-    for (let i = 1; i <= n; i++) {
-      for (let j = 1; j <= m; j++) {
-        if (la[i - 1] === lb[j - 1]) {
-          curr[j] = prev[j - 1] + 1;
-          if (curr[j] > maxLen) maxLen = curr[j];
-        } else {
-          curr[j] = 0;
-        }
-      }
-      [prev, curr] = [curr, prev];
-      curr.fill(0);
-    }
-
-    return (maxLen * 2) / (n + m);
-  }
-
   // =====================================================
   // Structural Fingerprints for LCS
   // =====================================================
 
   /**
    * Create a structural fingerprint for LCS matching.
-   * Includes G/M codes and which axis letters are present, but NOT values.
-   * This lets lines with same structure match even if coordinates differ.
+   * Includes modal G-code state and binned coordinate values for bare coordinate lines.
    */
-  function fingerprint(parsed, rules) {
+  function fingerprint(parsed, rules, modalG) {
     if (parsed.isBlank) return '__BLANK__';
 
     const parts = [];
@@ -329,24 +261,48 @@ const DiffEngine = (() => {
     for (const m of parsed.mCodes) {
       parts.push(rules.normalizeGMCodes ? m.replace(/([GM])0+(\d)/gi, '$1$2').toUpperCase() : m.toUpperCase());
     }
+
+    const hasGM = parsed.gCodes.length > 0 || parsed.mCodes.length > 0;
+
     // Axis letters present (sorted)
     const axisLetters = Object.keys(parsed.axes).sort().join('');
-    if (axisLetters) parts.push(axisLetters);
-    // Arc params present
     const arcLetters = Object.keys(parsed.arcParams).sort().join('');
-    if (arcLetters) parts.push(arcLetters);
-    // Rotary present
     const rotaryLetters = Object.keys(parsed.rotary).sort().join('');
+    const hasCoords = axisLetters || arcLetters || rotaryLetters;
+
+    // For bare coordinate lines (no G/M codes), prepend modal G-code
+    if (!hasGM && hasCoords && modalG) {
+      parts.push(modalG);
+    }
+
+    if (axisLetters) parts.push(axisLetters);
+    if (arcLetters) parts.push(arcLetters);
     if (rotaryLetters) parts.push(rotaryLetters);
+
+    // For bare coordinate lines, add binned coordinate values to distinguish spatial regions
+    if (!hasGM && hasCoords) {
+      const binned = [];
+      for (const [k, v] of Object.entries(parsed.axes).sort()) {
+        binned.push(k + Math.round(v));
+      }
+      for (const [k, v] of Object.entries(parsed.arcParams).sort()) {
+        binned.push(k + Math.round(v));
+      }
+      for (const [k, v] of Object.entries(parsed.rotary).sort()) {
+        binned.push(k + Math.round(v));
+      }
+      if (binned.length > 0) parts.push(binned.join(''));
+    }
+
     // F/S/T/H/D presence
     if (parsed.feed !== null) parts.push('F');
     if (parsed.spindle !== null) parts.push('S');
     if (parsed.tool !== null) parts.push('T');
     if (parsed.hOffset !== null) parts.push('H');
     if (parsed.dOffset !== null) parts.push('D');
-    // Macros presence
+    // Macros
     if (parsed.macros.length > 0) parts.push('#MACRO');
-    // Comment (include text for comment-only lines so they match specifically)
+    // Comment-only lines get full text for precise matching
     if (parsed.isCommentOnly && parsed.comment) {
       const ct = rules.ignoreCase ? parsed.comment.toLowerCase() : parsed.comment;
       parts.push('(' + ct + ')');
@@ -359,18 +315,8 @@ const DiffEngine = (() => {
   // Token-Level Classification
   // =====================================================
 
-  // Token types that are always critical when they differ
-  const CRITICAL_TYPES = new Set([
-    'gCode', 'mCode', 'tool', 'hOffset', 'dOffset', 'spindle', 'feed', 'macro', 'comment'
-  ]);
+  const FP_EPS = 1e-10;
 
-  // Token types that are coordinate noise candidates
-  const COORDINATE_TYPES = new Set(['axis', 'arcParam', 'rotary']);
-
-  /**
-   * Compare two parsed lines token-by-token.
-   * Returns { severity, tokenDiffs }
-   */
   function classifyTokens(parsedA, parsedB) {
     const tokenDiffs = [];
 
@@ -399,16 +345,17 @@ const DiffEngine = (() => {
     compareField(parsedA, parsedB, 'spindle', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'feed', 'critical', tokenDiffs);
 
-    // Compare axes (coordinate — noise candidate)
+    // Compare axes
     for (const axis of ['X', 'Y', 'Z', 'A', 'B', 'C']) {
       const va = parsedA.axes[axis] ?? parsedA.rotary[axis] ?? null;
       const vb = parsedB.axes[axis] ?? parsedB.rotary[axis] ?? null;
       if (va === null && vb === null) continue;
-      if (va === null || vb === null || Math.abs(va - vb) > 1e-10) {
+      if (va === null || vb === null || Math.abs(va - vb) > FP_EPS) {
         const sev = axis === 'Z' ? 'coordinate-z' : 'coordinate';
         const tType = (axis === 'A' || axis === 'B' || axis === 'C') ? 'rotary' : 'axis';
+        const delta = (va !== null && vb !== null) ? Math.abs(va - vb) : null;
         tokenDiffs.push({ field: 'axis-' + axis, severity: sev,
-          leftVal: va, rightVal: vb,
+          leftVal: va, rightVal: vb, delta,
           leftTokens: parsedA.tokens.filter(t => (t.type === tType) && t.axis === axis),
           rightTokens: parsedB.tokens.filter(t => (t.type === tType) && t.axis === axis) });
       }
@@ -419,15 +366,16 @@ const DiffEngine = (() => {
       const va = parsedA.arcParams[p] ?? null;
       const vb = parsedB.arcParams[p] ?? null;
       if (va === null && vb === null) continue;
-      if (va === null || vb === null || Math.abs(va - vb) > 1e-10) {
+      if (va === null || vb === null || Math.abs(va - vb) > FP_EPS) {
+        const delta = (va !== null && vb !== null) ? Math.abs(va - vb) : null;
         tokenDiffs.push({ field: 'arc-' + p, severity: 'coordinate',
-          leftVal: va, rightVal: vb,
+          leftVal: va, rightVal: vb, delta,
           leftTokens: parsedA.tokens.filter(t => t.type === 'arcParam' && t.axis === p),
           rightTokens: parsedB.tokens.filter(t => t.type === 'arcParam' && t.axis === p) });
       }
     }
 
-    // Compare comments (presence and content)
+    // Compare comments
     if ((parsedA.comment || '') !== (parsedB.comment || '')) {
       tokenDiffs.push({ field: 'comment', severity: 'critical',
         leftVal: parsedA.comment, rightVal: parsedB.comment,
@@ -483,7 +431,7 @@ const DiffEngine = (() => {
     const va = parsedA[field];
     const vb = parsedB[field];
     if (va === null && vb === null) return;
-    if (va === null || vb === null || Math.abs(va - vb) > 1e-10) {
+    if (va === null || vb === null || Math.abs(va - vb) > FP_EPS) {
       tokenDiffs.push({ field, severity, leftVal: va, rightVal: vb,
         leftTokens: parsedA.tokens.filter(t => t.type === field),
         rightTokens: parsedB.tokens.filter(t => t.type === field) });
@@ -491,16 +439,15 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
-  // Adaptive Noise Detection
+  // Adaptive Noise Detection (with tolerance for non-noise sections)
   // =====================================================
 
   /**
-   * Post-process a section's diff results.
-   * If many lines only have coordinate changes, mark them as noise.
-   * Rare Z-only changes stay critical.
+   * Post-process diff ops with section-aware noise detection.
+   * Noisy sections: coordinate diffs → 'noise' (rare Z stays critical)
+   * Non-noisy sections: coordinate diffs classified by tolerance thresholds
    */
-  function detectAdaptiveNoise(sectionOps, noiseThreshold) {
-    // Count lines with only coordinate diffs vs any critical diffs
+  function detectAdaptiveNoise(sectionOps, noiseThreshold, minorThreshold, majorThreshold) {
     let coordOnlyCount = 0;
     let modifiedCount = 0;
     let zOnlyCount = 0;
@@ -519,38 +466,80 @@ const DiffEngine = (() => {
       }
     }
 
-    // If enough coordinate-only lines, mark them as noise
     const isNoisy = coordOnlyCount >= noiseThreshold ||
                     (modifiedCount > 5 && coordOnlyCount / modifiedCount > 0.6);
 
-    if (!isNoisy) return;
+    if (isNoisy) {
+      // Noisy section: mark coordinate-only lines as noise, preserve rare Z
+      const preserveZ = zOnlyCount <= 5;
 
-    // Mark coordinate-only lines as noise, but preserve rare Z changes as critical
-    const preserveZ = zOnlyCount <= 5;
-
-    for (const op of sectionOps) {
-      if (op.tokenDiffs) {
+      for (const op of sectionOps) {
+        if (!op.tokenDiffs) continue;
         const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
-        if (hasCritical) continue; // Don't touch lines with critical diffs
+        if (hasCritical) continue;
 
         const hasCoord = op.tokenDiffs.some(d => d.severity === 'coordinate' || d.severity === 'coordinate-z');
-        const onlyZ = op.tokenDiffs.every(d => d.severity === 'coordinate-z');
+        const onlyZ = op.tokenDiffs.every(d => d.severity === 'coordinate-z' || d.severity === 'equal');
 
         if (hasCoord) {
           if (onlyZ && preserveZ) {
-            // Rare Z change — keep as critical
             op.type = 'critical';
           } else {
-            // Adaptive noise — dim it
             op.type = 'noise';
           }
         }
+      }
+    } else {
+      // Non-noisy section: apply tolerance thresholds to coordinate diffs
+      applyToleranceClassification(sectionOps, minorThreshold, majorThreshold);
+    }
+  }
+
+  /**
+   * For non-noise sections, classify coordinate diffs using tolerance thresholds.
+   * - All deltas within minorThreshold → 'equal' (invisible)
+   * - Any delta within majorThreshold → 'minor' (amber)
+   * - Any delta beyond majorThreshold → 'critical' (red)
+   */
+  function applyToleranceClassification(sectionOps, minorThreshold, majorThreshold) {
+    for (const op of sectionOps) {
+      if (!op.tokenDiffs) continue;
+      const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
+      if (hasCritical) continue;
+
+      const coordDiffs = op.tokenDiffs.filter(d =>
+        d.severity === 'coordinate' || d.severity === 'coordinate-z'
+      );
+      if (coordDiffs.length === 0) continue;
+
+      // Check max delta across all coordinate diffs on this line
+      let maxDelta = 0;
+      let allHaveDelta = true;
+      for (const cd of coordDiffs) {
+        if (cd.delta === null) {
+          allHaveDelta = false;
+          break;
+        }
+        if (cd.delta > maxDelta) maxDelta = cd.delta;
+      }
+
+      if (!allHaveDelta) {
+        // Missing axis on one side — keep as-is (critical by default)
+        continue;
+      }
+
+      if (maxDelta <= minorThreshold + FP_EPS) {
+        op.type = 'equal';
+      } else if (maxDelta <= majorThreshold + FP_EPS) {
+        op.type = 'minor';
+      } else {
+        op.type = 'critical';
       }
     }
   }
 
   // =====================================================
-  // LCS infrastructure (reused for both old and new engine)
+  // LCS Infrastructure
   // =====================================================
 
   function buildLCSTable(leftArr, rightArr, n, m) {
@@ -589,100 +578,38 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
-  // Main Semantic Diff
+  // Main Semantic Diff — Whole-File LCS
   // =====================================================
 
-  /**
-   * Compute a G-code-aware semantic diff.
-   * opts: { rules, noiseThreshold, suppressNoise }
-   */
   function computeSemanticDiff(leftLines, rightLines, opts) {
     const rules = opts.rules || {};
     const noiseThreshold = opts.noiseThreshold || 10;
     const suppressNoise = opts.suppressNoise !== false;
+    const minorThreshold = opts.minorThreshold || 0.001;
+    const majorThreshold = opts.majorThreshold || 0.01;
 
     // Parse all lines
     const leftParsed = leftLines.map(l => parseGCodeLine(l));
     const rightParsed = rightLines.map(l => parseGCodeLine(l));
 
-    // Segment into sections
-    const leftSections = segmentIntoSections(leftLines, leftParsed);
-    const rightSections = segmentIntoSections(rightLines, rightParsed);
+    // Track modal G-code state per file
+    const leftModal = trackModalState(leftParsed);
+    const rightModal = trackModalState(rightParsed);
 
-    // Match sections
-    const sectionMatches = matchSections(leftSections, rightSections);
-
-    // Diff within each matched section pair
-    const allOps = [];
-
-    for (const match of sectionMatches) {
-      if (match.left && match.right) {
-        // Both sides present — diff within section
-        const ops = diffSection(
-          leftLines, leftParsed, match.left,
-          rightLines, rightParsed, match.right,
-          rules
-        );
-
-        // Apply noise detection
-        if (suppressNoise) {
-          detectAdaptiveNoise(ops, noiseThreshold);
-        }
-
-        allOps.push(...ops);
-
-      } else if (match.left) {
-        // Section only on left — all removed
-        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
-          if (!leftParsed[i].isBlank) {
-            allOps.push({ type: 'removed', leftIdx: i, leftLine: leftLines[i] });
-          }
-        }
-      } else if (match.right) {
-        // Section only on right — all added
-        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
-          if (!rightParsed[i].isBlank) {
-            allOps.push({ type: 'added', rightIdx: i, rightLine: rightLines[i] });
-          }
-        }
-      }
-    }
-
-    // Fill in any lines not covered by sections (shouldn't happen, but safety)
-    // Sort ops by line index for proper ordering
-    allOps.sort((a, b) => {
-      const ai = a.leftIdx ?? a.rightIdx ?? 0;
-      const bi = b.leftIdx ?? b.rightIdx ?? 0;
-      return ai - bi;
-    });
-
-    return allOps;
-  }
-
-  /**
-   * Diff two matched sections using structural fingerprint LCS.
-   */
-  function diffSection(leftLines, leftParsed, leftSection, rightLines, rightParsed, rightSection, rules) {
-    // Extract section line ranges
-    const lStart = leftSection.startLine;
-    const lEnd = leftSection.endLine;
-    const rStart = rightSection.startLine;
-    const rEnd = rightSection.endLine;
-
-    // Build fingerprints for this section's lines
+    // Build fingerprints for ALL non-blank lines (whole file)
     const leftFP = [];
     const rightFP = [];
-    const leftIdxMap = []; // maps section-local index to global line index
+    const leftIdxMap = [];
     const rightIdxMap = [];
 
-    for (let i = lStart; i <= lEnd; i++) {
-      if (leftParsed[i].isBlank) continue; // skip blank lines
-      leftFP.push(fingerprint(leftParsed[i], rules));
+    for (let i = 0; i < leftParsed.length; i++) {
+      if (leftParsed[i].isBlank) continue;
+      leftFP.push(fingerprint(leftParsed[i], rules, leftModal[i]));
       leftIdxMap.push(i);
     }
-    for (let i = rStart; i <= rEnd; i++) {
+    for (let i = 0; i < rightParsed.length; i++) {
       if (rightParsed[i].isBlank) continue;
-      rightFP.push(fingerprint(rightParsed[i], rules));
+      rightFP.push(fingerprint(rightParsed[i], rules, rightModal[i]));
       rightIdxMap.push(i);
     }
 
@@ -691,11 +618,27 @@ const DiffEngine = (() => {
 
     if (n === 0 && m === 0) return [];
 
-    // LCS on fingerprints
+    // Whole-file LCS on fingerprints
     const dp = buildLCSTable(leftFP, rightFP, n, m);
     const rawOps = backtrackLCS(leftFP, rightFP, dp, n, m);
 
-    // Group consecutive removes/adds and pair them
+    // Classify each op with token-level comparison
+    const allOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap);
+
+    // Post-process: segment into sections and apply noise detection per section
+    if (suppressNoise) {
+      applyNoiseDetection(allOps, leftLines, leftParsed, rightLines, rightParsed,
+        noiseThreshold, minorThreshold, majorThreshold);
+    }
+
+    return allOps;
+  }
+
+  /**
+   * Convert raw LCS ops into classified diff ops with token diffs.
+   * Groups consecutive removes/adds and pairs them for comparison.
+   */
+  function classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap) {
     const result = [];
     let i = 0;
 
@@ -703,14 +646,13 @@ const DiffEngine = (() => {
       if (rawOps[i].type === 'equal') {
         const li = leftIdxMap[rawOps[i].leftIdx];
         const ri = rightIdxMap[rawOps[i].rightIdx];
-        // Even "equal" fingerprints may have value differences
         const classification = classifyTokens(leftParsed[li], rightParsed[ri]);
         if (classification.severity === 'equal') {
           result.push({ type: 'equal', leftIdx: li, rightIdx: ri,
                         leftLine: leftLines[li], rightLine: rightLines[ri] });
         } else {
           result.push({
-            type: classification.severity === 'critical' ? 'critical' : classification.severity,
+            type: classification.severity,
             leftIdx: li, rightIdx: ri,
             leftLine: leftLines[li], rightLine: rightLines[ri],
             tokenDiffs: classification.tokenDiffs
@@ -729,7 +671,7 @@ const DiffEngine = (() => {
         i++;
       }
 
-      // Pair them and classify
+      // Pair removes with adds and classify
       const pairCount = Math.min(removes.length, adds.length);
       for (let p = 0; p < pairCount; p++) {
         const li = leftIdxMap[removes[p].leftIdx];
@@ -737,7 +679,7 @@ const DiffEngine = (() => {
         const classification = classifyTokens(leftParsed[li], rightParsed[ri]);
         const type = classification.severity === 'equal' ? 'equal' : classification.severity;
         result.push({
-          type: type === 'critical' ? 'critical' : type,
+          type,
           leftIdx: li, rightIdx: ri,
           leftLine: leftLines[li], rightLine: rightLines[ri],
           tokenDiffs: classification.tokenDiffs
@@ -757,19 +699,60 @@ const DiffEngine = (() => {
     return result;
   }
 
+  /**
+   * Segment diff ops into sections based on left-side line indices,
+   * then apply noise detection per section.
+   */
+  function applyNoiseDetection(allOps, leftLines, leftParsed, rightLines, rightParsed,
+    noiseThreshold, minorThreshold, majorThreshold) {
+
+    // Build sections from left file (primary reference)
+    const leftSections = segmentIntoSections(leftLines, leftParsed);
+
+    // Also get right sections for added-only ops
+    const rightSections = segmentIntoSections(rightLines, rightParsed);
+
+    // Assign each op to a left section based on its leftIdx (or rightIdx for added lines)
+    function getSectionIdx(lineIdx, sections) {
+      for (let s = sections.length - 1; s >= 0; s--) {
+        if (lineIdx >= sections[s].startLine) return s;
+      }
+      return 0;
+    }
+
+    // Group ops by their section
+    const sectionOpsMap = {};
+    for (const op of allOps) {
+      let sIdx;
+      if (op.leftIdx !== undefined) {
+        sIdx = 'L' + getSectionIdx(op.leftIdx, leftSections);
+      } else {
+        sIdx = 'R' + getSectionIdx(op.rightIdx, rightSections);
+      }
+      if (!sectionOpsMap[sIdx]) sectionOpsMap[sIdx] = [];
+      sectionOpsMap[sIdx].push(op);
+    }
+
+    // Apply noise detection to each section group
+    for (const ops of Object.values(sectionOpsMap)) {
+      detectAdaptiveNoise(ops, noiseThreshold, minorThreshold, majorThreshold);
+    }
+  }
+
   // =====================================================
   // Stats
   // =====================================================
 
   function countStats(diffResult) {
-    let critical = 0, noise = 0, added = 0, removed = 0;
+    let critical = 0, noise = 0, added = 0, removed = 0, minor = 0;
     for (const op of diffResult) {
       if (op.type === 'critical' || op.type === 'coordinate-z') critical++;
       else if (op.type === 'noise' || op.type === 'coordinate') noise++;
+      else if (op.type === 'minor') minor++;
       else if (op.type === 'added') added++;
       else if (op.type === 'removed') removed++;
     }
-    return { critical, noise, added, removed };
+    return { critical, noise, minor, added, removed };
   }
 
   // =====================================================
@@ -781,7 +764,7 @@ const DiffEngine = (() => {
     fingerprint,
     classifyTokens,
     segmentIntoSections,
-    matchSections,
+    trackModalState,
     computeSemanticDiff,
     countStats
   };
