@@ -22,6 +22,15 @@
     <button id="settings-toggle" title="Settings">&#9881;</button>
   </div>
 
+  <!-- Color legend strip -->
+  <div id="color-legend">
+    <span class="legend-item"><span class="legend-swatch legend-critical"></span>Critical</span>
+    <span class="legend-item"><span class="legend-swatch legend-minor"></span>Minor</span>
+    <span class="legend-item"><span class="legend-swatch legend-noise"></span>Noise</span>
+    <span class="legend-item"><span class="legend-swatch legend-added"></span>Added</span>
+    <span class="legend-item"><span class="legend-swatch legend-removed"></span>Removed</span>
+  </div>
+
   <!-- Main area -->
   <div id="main">
     <!-- Left pane -->
@@ -140,6 +149,7 @@
   <!-- Status bar -->
   <div id="status-bar">
     <div id="status-left">
+      <span>Toolpaths: <span id="stat-toolpaths">0</span></span>
       <span>Critical: <span class="status-major" id="stat-major">0</span></span>
       <span>Minor: <span class="status-minor-count" id="stat-minor-count">0</span></span>
       <span>Noise: <span class="status-noise" id="stat-noise">0</span></span>

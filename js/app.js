@@ -24,6 +24,7 @@ const App = (() => {
   let currentDiff = [];
   let diffPositions = []; // indices into currentDiff that are actual diffs
   let currentDiffIndex = -1;
+  let currentToolpaths = { left: [], right: [] };
 
   // === Example data ===
   const EXAMPLE_LEFT = `O1000 (PART PROGRAM - KNOWN GOOD)
@@ -78,7 +79,7 @@ N120 M30`;
   }
 
   // === Settings persistence ===
-  const SETTINGS_VERSION = 4; // bump when defaults change
+  const SETTINGS_VERSION = 5; // bump when defaults change
 
   function loadSettings() {
     try {
@@ -247,13 +248,15 @@ N120 M30`;
     const rightLines = rightText.split('\n');
 
     // Run semantic diff engine
-    currentDiff = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
+    const diffResult = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
       rules: settings,
       noiseThreshold: settings.noiseThreshold,
       suppressNoise: settings.suppressNoise,
       minorThreshold: settings.minorThreshold,
       majorThreshold: settings.majorThreshold
     });
+    currentDiff = diffResult.ops;
+    currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
 
     // Build decorations AND alignment padding
     const leftDecos = [];
@@ -368,6 +371,11 @@ N120 M30`;
     document.getElementById('stat-noise').textContent = stats.noise;
     document.getElementById('stat-lines-left').textContent = leftLines;
     document.getElementById('stat-lines-right').textContent = rightLines;
+
+    // Toolpath count (only real toolpaths, not preamble/end)
+    const tpCount = currentToolpaths.left.filter(t => t.type === 'toolpath').length;
+    const tpEl = document.getElementById('stat-toolpaths');
+    if (tpEl) tpEl.textContent = tpCount;
 
     // Line count warning
     const center = document.getElementById('status-center');
