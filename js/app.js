@@ -225,7 +225,7 @@ N120 M30`;
     switch (opType) {
       case 'critical': case 'coordinate-z': return 'major';
       case 'minor': return 'minor';
-      case 'coordinate': case 'noise': return 'noise';
+      case 'coordinate': case 'noise': case 'noise-added': case 'noise-removed': return 'noise';
       case 'added': return 'added';
       case 'removed': return 'removed';
       default: return opType;
@@ -308,6 +308,20 @@ N120 M30`;
         leftDecos.push({ line: op.leftIdx, type: 'removed' });
         diffPositions.push(i);
         rightPendingPad++;
+
+      } else if (op.type === 'noise-added') {
+        if (!settings.hideNoise) {
+          rightDecos.push({ line: op.rightIdx, type: 'noise' });
+          leftPendingPad++;  // preserve alignment
+        }
+        // never add to diffPositions — navigation skips noise
+
+      } else if (op.type === 'noise-removed') {
+        if (!settings.hideNoise) {
+          leftDecos.push({ line: op.leftIdx, type: 'noise' });
+          rightPendingPad++;  // preserve alignment
+        }
+        // never add to diffPositions — navigation skips noise
       }
     }
 
