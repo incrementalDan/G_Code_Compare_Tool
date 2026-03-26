@@ -333,6 +333,13 @@ html, body {
   border-bottom: 1px solid var(--border);
 }
 
+.setting-description {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
 .setting-row {
   display: flex;
   align-items: center;
@@ -399,6 +406,7 @@ html, body {
 #status-left { display: flex; gap: 12px; }
 
 .status-major { color: #c62828; }
+.status-minor-count { color: #c89a10; }
 .status-noise { color: #666688; }
 
 #status-center {
