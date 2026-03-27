@@ -157,7 +157,7 @@ N120 M30`;
     });
     document.getElementById('tp-select-none').addEventListener('click', (e) => {
       e.preventDefault();
-      for (const tp of currentToolpaths.left) disabledToolpathIds.add(tp.id);
+      for (const tp of currentToolpaths.left) disabledToolpathIds.add(String(tp.id));
       for (const tp of currentToolpaths.right) disabledToolpathIds.add('R' + tp.id);
       buildToolpathMenu();
       applyDecorations();
@@ -270,7 +270,7 @@ N120 M30`;
     if (disabledToolpathIds.size === 0) return false;
     if (op.leftIdx !== undefined) {
       const tp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
-      if (tp && disabledToolpathIds.has(tp.id)) return true;
+      if (tp && disabledToolpathIds.has(String(tp.id))) return true;
     }
     if (op.rightIdx !== undefined && op.leftIdx === undefined) {
       const tp = getToolpathForLine(op.rightIdx, currentToolpaths.right);
@@ -397,7 +397,7 @@ N120 M30`;
     const leftDisabled = new Set();
     const rightDisabled = new Set();
     for (const tp of currentToolpaths.left) {
-      if (disabledToolpathIds.has(tp.id)) {
+      if (disabledToolpathIds.has(String(tp.id))) {
         for (let l = tp.startLine; l <= tp.endLine && l < leftLineCount; l++) leftDisabled.add(l);
       }
     }
