@@ -152,10 +152,12 @@ const Editor = (() => {
       }
 
       const isDisabled = state.disabledLines && state.disabledLines.has(i);
-      const type = isDisabled ? null : state.decorations[i];
+      const deco = state.decorations[i];
+      const type = isDisabled ? null : (deco ? deco.type : null);
+      const tokenDiffs = (!isDisabled && deco) ? deco.tokenDiffs : null;
       const bgClass = type ? `diff-bg-${type}` : '';
       const disabledClass = isDisabled ? ' line-disabled' : '';
-      const highlighted = syntaxHighlightLine(lines[i]);
+      const highlighted = syntaxHighlightLine(lines[i], tokenDiffs, state.side);
       html += `<div class="editor-line ${bgClass}${disabledClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
     }
 
@@ -167,11 +169,58 @@ const Editor = (() => {
     state.display.style.minHeight = (totalDisplayLines * lineHeight) + 'px';
   }
 
-  function syntaxHighlightLine(line) {
+  /**
+   * Extract character ranges from tokenDiffs for a given side.
+   * Returns sorted, non-overlapping [{start, end}] arrays.
+   */
+  function extractDiffRanges(tokenDiffs, side) {
+    if (!tokenDiffs || !tokenDiffs.length) return [];
+    const ranges = [];
+    const key = side === 'left' ? 'leftTokens' : 'rightTokens';
+    for (const td of tokenDiffs) {
+      const tokens = td[key];
+      if (!tokens) continue;
+      for (const t of tokens) {
+        if (t.start !== undefined && t.end !== undefined) {
+          ranges.push({ start: t.start, end: t.end });
+        }
+      }
+    }
+    // Sort by start position
+    ranges.sort((a, b) => a.start - b.start);
+    // Merge overlapping
+    const merged = [];
+    for (const r of ranges) {
+      if (merged.length > 0 && r.start <= merged[merged.length - 1].end) {
+        merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, r.end);
+      } else {
+        merged.push({ start: r.start, end: r.end });
+      }
+    }
+    return merged;
+  }
+
+  function syntaxHighlightLine(line, tokenDiffs, side) {
     if (!line) return '';
 
+    // Insert PUA markers at diff token boundaries (before HTML escaping)
+    let s = line;
+    if (tokenDiffs && side) {
+      const ranges = extractDiffRanges(tokenDiffs, side);
+      if (ranges.length > 0) {
+        // Insert markers from end to start so positions stay valid
+        for (let r = ranges.length - 1; r >= 0; r--) {
+          const { start, end } = ranges[r];
+          const safeEnd = Math.min(end, s.length);
+          const safeStart = Math.min(start, s.length);
+          s = s.slice(0, safeEnd) + '\uE001' + s.slice(safeEnd);
+          s = s.slice(0, safeStart) + '\uE000' + s.slice(safeStart);
+        }
+      }
+    }
+
     // Escape HTML
-    let s = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     // Apply syntax tokens (order matters — later rules can color inside earlier spans)
     // Comments first
@@ -203,6 +252,10 @@ const Editor = (() => {
     s = s.replace(/\b([IJK]-?\d+\.?\d*)\b/gi, '<span class="gcode-ijk">$1</span>');
     // Other params R, P, Q, L
     s = s.replace(/\b([RPQL]-?\d+\.?\d*)\b/gi, '<span class="gcode-param">$1</span>');
+
+    // Replace PUA markers with token-diff spans (after all syntax highlighting)
+    s = s.replace(/\uE000/g, '<span class="token-diff">');
+    s = s.replace(/\uE001/g, '</span>');
 
     return s;
   }
@@ -303,7 +356,7 @@ const Editor = (() => {
 
     state.decorations = {};
     for (const d of decorations) {
-      state.decorations[d.line] = d.type;
+      state.decorations[d.line] = { type: d.type, tokenDiffs: d.tokenDiffs || null };
     }
     state.alignmentPadding = padding || {};
     state.disabledLines = disabledLines || new Set();

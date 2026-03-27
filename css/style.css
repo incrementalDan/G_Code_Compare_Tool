@@ -576,6 +576,14 @@ html, body {
   gap: 12px;
 }
 
+/* ===== Token-level diff highlighting ===== */
+.token-diff {
+  background: rgba(255, 200, 0, 0.35);
+  border-bottom: 2px solid #ffcc00;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 /* ===== Scrollbar styling ===== */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
