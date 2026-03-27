@@ -151,10 +151,12 @@ const Editor = (() => {
         html += `<div class="editor-line padding-line"><span class="line-num"></span><span class="line-content">&nbsp;</span></div>`;
       }
 
-      const type = state.decorations[i];
+      const isDisabled = state.disabledLines && state.disabledLines.has(i);
+      const type = isDisabled ? null : state.decorations[i];
       const bgClass = type ? `diff-bg-${type}` : '';
+      const disabledClass = isDisabled ? ' line-disabled' : '';
       const highlighted = syntaxHighlightLine(lines[i]);
-      html += `<div class="editor-line ${bgClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
+      html += `<div class="editor-line ${bgClass}${disabledClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
     }
 
     state.display.innerHTML = html;
@@ -295,7 +297,7 @@ const Editor = (() => {
    * decorations: array of { line, type }
    * padding: object { lineIndex: numPaddingLines } — blank lines inserted before lineIndex
    */
-  function setDecorations(side, decorations, padding) {
+  function setDecorations(side, decorations, padding, disabledLines) {
     const state = side === 'left' ? leftState : rightState;
     if (!state) return;
 
@@ -304,6 +306,7 @@ const Editor = (() => {
       state.decorations[d.line] = d.type;
     }
     state.alignmentPadding = padding || {};
+    state.disabledLines = disabledLines || new Set();
     render(state);
   }
 

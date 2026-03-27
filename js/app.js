@@ -393,6 +393,20 @@ N120 M30`;
     const leftLineCount = leftText ? leftText.split('\n').length : 0;
     const rightLineCount = rightText ? rightText.split('\n').length : 0;
 
+    // Build disabled line sets for editor dimming
+    const leftDisabled = new Set();
+    const rightDisabled = new Set();
+    for (const tp of currentToolpaths.left) {
+      if (disabledToolpathIds.has(tp.id)) {
+        for (let l = tp.startLine; l <= tp.endLine && l < leftLineCount; l++) leftDisabled.add(l);
+      }
+    }
+    for (const tp of currentToolpaths.right) {
+      if (disabledToolpathIds.has('R' + tp.id)) {
+        for (let l = tp.startLine; l <= tp.endLine && l < rightLineCount; l++) rightDisabled.add(l);
+      }
+    }
+
     const leftDecos = [];
     const rightDecos = [];
     const leftPadding = {};
@@ -469,8 +483,8 @@ N120 M30`;
       rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + rightPendingPad;
     }
 
-    Editor.setDecorations('left', leftDecos, leftPadding);
-    Editor.setDecorations('right', rightDecos, rightPadding);
+    Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled);
+    Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled);
 
     // Update diff markers in center gutter
     updateDiffMarkers();
@@ -502,7 +516,9 @@ N120 M30`;
       const op = currentDiff[i];
       if (op.type === 'equal') continue;
       // Filter noise from gutter
-      if (op.type === 'noise' || op.type === 'coordinate') continue;
+      if (op.type === 'noise' || op.type === 'coordinate' || op.type === 'noise-added' || op.type === 'noise-removed') continue;
+      // Filter disabled toolpath ops from gutter
+      if (isOpDisabled(op)) continue;
 
       const dt = decoType(op.type);
       const top = Math.round((i / total) * height);
