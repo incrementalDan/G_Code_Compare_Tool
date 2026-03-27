@@ -245,15 +245,65 @@ const DiffEngine = (() => {
   // =====================================================
 
   /**
-   * Detect toolpath boundaries using N## G100 T## anchor lines.
-   * Falls back to comment-based segmentation if no anchors found.
-   * Returns array of toolpath objects with metadata.
+   * Detect toolpath boundaries using comment-pair anchors and G100 lines.
+   *
+   * Universal pattern (Fusion 360 + Brother Speedio):
+   *   blank_line → comment_only_line → comment_only_line
+   * This appears for ALL toolpaths (both tool changes and same-tool re-calls).
+   *
+   * G100 anchors (tool changes only) are associated with the nearest comment-pair.
+   * Same-tool re-calls have no G100 — the comment pair is the only marker.
+   *
+   * Falls back to comment-based segmentation if no comment-pairs found.
    */
   function segmentIntoToolpaths(lines, parsedLines) {
-    // Pass 1: Find anchor lines (G100 T##)
-    // Must have T## (tool call) + G100 + significant context (S##, X/Y axes, or M03/M04)
-    // This distinguishes real toolpath starts from park-at-end moves like bare "G100 T51"
-    const anchors = [];
+    // --- Pass 1: Find comment-pair anchors ---
+    // Pattern: blank line followed by 2+ consecutive comment-only lines
+    // Skip pairs that are in the program header (before any G/M code)
+
+    // Find where the header ends (first non-comment, non-blank line)
+    let headerEndLine = 0;
+    for (let i = 0; i < parsedLines.length; i++) {
+      const p = parsedLines[i];
+      if (!p.isBlank && !p.isCommentOnly) {
+        headerEndLine = i;
+        break;
+      }
+    }
+
+    const commentAnchors = [];
+    for (let i = headerEndLine; i < parsedLines.length - 1; i++) {
+      const p = parsedLines[i];
+      if (!p.isBlank) continue;
+
+      // Found a blank line — check if next 2+ lines are comment-only
+      const nextIdx = i + 1;
+      if (nextIdx >= parsedLines.length) continue;
+      if (!parsedLines[nextIdx].isCommentOnly) continue;
+      if (nextIdx + 1 >= parsedLines.length) continue;
+      if (!parsedLines[nextIdx + 1].isCommentOnly) continue;
+
+      // Found: blank → comment → comment. Collect all consecutive comments.
+      const comments = [];
+      let j = nextIdx;
+      while (j < parsedLines.length && parsedLines[j].isCommentOnly) {
+        comments.push(parsedLines[j].comment || '');
+        j++;
+      }
+
+      commentAnchors.push({
+        blankLine: i,
+        commentStart: nextIdx,
+        commentEnd: nextIdx + comments.length - 1,
+        comments
+      });
+
+      // Skip past this block so we don't double-detect
+      i = nextIdx + comments.length - 1;
+    }
+
+    // --- Pass 2: Find G100 anchors (tool changes) ---
+    const g100Anchors = [];
     for (let i = 0; i < parsedLines.length; i++) {
       const p = parsedLines[i];
       if (p.tool !== null) {
@@ -262,7 +312,6 @@ const DiffEngine = (() => {
           return num === 100;
         });
         if (hasG100) {
-          // Must have spindle speed, X/Y position, or M03/M04 to be a real toolpath start
           const hasXY = p.axes.X !== undefined || p.axes.Y !== undefined;
           const hasSpin = p.spindle !== null;
           const hasM03M04 = p.mCodes.some(m => {
@@ -270,7 +319,7 @@ const DiffEngine = (() => {
             return num === 3 || num === 4;
           });
           if (hasXY || hasSpin || hasM03M04) {
-            anchors.push({
+            g100Anchors.push({
               lineIndex: i,
               toolNumber: p.tool,
               nNumber: p.lineNumber,
@@ -281,8 +330,13 @@ const DiffEngine = (() => {
       }
     }
 
-    // No anchors found — fall back to comment-based sections
-    if (anchors.length === 0) {
+    // --- No comment-pair anchors found — fall back ---
+    if (commentAnchors.length === 0) {
+      // If we have G100 anchors but no comment-pairs, use G100-only detection
+      if (g100Anchors.length > 0) {
+        return buildFromG100Only(lines, parsedLines, g100Anchors);
+      }
+      // No anchors at all — fall back to comment-based sections
       const sections = segmentIntoSections(lines, parsedLines);
       return sections.map((s, idx) => ({
         id: idx,
@@ -298,21 +352,41 @@ const DiffEngine = (() => {
       }));
     }
 
-    // Pass 2: Expand boundaries backward from each anchor
-    const toolpaths = [];
+    // --- Pass 3: Associate G100 anchors with comment-pairs ---
+    // For each comment-pair, look forward up to 20 lines for a G100 anchor
+    const g100Used = new Set();
+    const commentG100Map = new Map(); // commentAnchor index → g100Anchor
+
+    for (let c = 0; c < commentAnchors.length; c++) {
+      const ca = commentAnchors[c];
+      for (const g of g100Anchors) {
+        if (g100Used.has(g)) continue;
+        if (g.lineIndex > ca.commentEnd && g.lineIndex <= ca.commentEnd + 20) {
+          commentG100Map.set(c, g);
+          g100Used.add(g);
+          break;
+        }
+      }
+    }
+
+    // --- Pass 4: Build toolpath objects ---
     const PREAMBLE_CODES = new Set(['G28', 'G53', 'G90', 'G49', 'G69', 'G54', 'G55', 'G56', 'G57', 'G58', 'G59', 'G53.1', 'G68.2']);
-    const PREAMBLE_MCODES = new Set(['M05', 'M09', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M01']);
+    const PREAMBLE_MCODES = new Set(['M05', 'M09', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M01', 'M141']);
     const CUTTING_GCODES = new Set([1, 2, 3]);
 
-    for (let a = 0; a < anchors.length; a++) {
-      const anchor = anchors[a];
-      let preambleStart = anchor.lineIndex;
+    const toolpaths = [];
+    let prevToolNumber = null;
 
-      // Walk backward to find where preamble begins
-      const minLine = a > 0 ? anchors[a - 1].lineIndex + 1 : 0;
-      const maxBack = Math.max(minLine, anchor.lineIndex - 40);
+    for (let c = 0; c < commentAnchors.length; c++) {
+      const ca = commentAnchors[c];
+      const g100 = commentG100Map.get(c) || null;
 
-      for (let i = anchor.lineIndex - 1; i >= maxBack; i--) {
+      // Expand backward from the blank line before the comment pair
+      let preambleStart = ca.blankLine;
+      const prevEnd = c > 0 ? commentAnchors[c - 1].commentEnd + 1 : headerEndLine;
+      const maxBack = Math.max(prevEnd, ca.blankLine - 40);
+
+      for (let i = ca.blankLine - 1; i >= maxBack; i--) {
         const p = parsedLines[i];
 
         // Stop at cutting moves (G01/G02/G03 with axis values)
@@ -324,7 +398,7 @@ const DiffEngine = (() => {
           if (hasCutting && Object.keys(p.axes).length > 0) break;
         }
 
-        // Bare coordinate lines (no G/M) under modal G1/G2/G3 = cutting
+        // Bare coordinate lines under modal cutting = cutting content
         if (p.gCodes.length === 0 && p.mCodes.length === 0 &&
             Object.keys(p.axes).length > 0 && !p.isCommentOnly && !p.isBlank) {
           break;
@@ -349,37 +423,31 @@ const DiffEngine = (() => {
         }
       }
 
-      // Extract metadata from lines between preambleStart and anchor
-      let name = '';
-      let opType = '';
-      let nameFound = false;
-      for (let i = preambleStart; i < anchor.lineIndex; i++) {
-        const p = parsedLines[i];
-        if (p.isCommentOnly && p.comment && p.comment.length >= 8) {
-          if (!nameFound) {
-            name = p.comment;
-            nameFound = true;
-          } else if (!opType) {
-            opType = p.comment;
-          }
-        }
-      }
+      // Extract metadata
+      const name = ca.comments[0] || '';
+      const opType = ca.comments.length > 1 ? ca.comments[1] : '';
+      const toolNumber = g100 ? g100.toolNumber : prevToolNumber;
+      const nNumber = g100 ? g100.nNumber : null;
+      const spindleSpeed = g100 ? g100.spindleSpeed : null;
+      const anchorLine = g100 ? g100.lineIndex : ca.commentStart;
+
+      prevToolNumber = toolNumber;
 
       toolpaths.push({
         id: toolpaths.length,
         type: 'toolpath',
         name,
         opType,
-        toolNumber: anchor.toolNumber,
-        nNumber: anchor.nNumber,
-        spindleSpeed: anchor.spindleSpeed,
+        toolNumber,
+        nNumber,
+        spindleSpeed,
         startLine: preambleStart,
-        anchorLine: anchor.lineIndex,
-        endLine: lines.length - 1  // will be adjusted below
+        anchorLine,
+        endLine: lines.length - 1
       });
     }
 
-    // Adjust endLines: each toolpath ends where the next one's preamble starts
+    // Adjust endLines
     for (let i = 0; i < toolpaths.length - 1; i++) {
       toolpaths[i].endLine = toolpaths[i + 1].startLine - 1;
     }
@@ -387,7 +455,7 @@ const DiffEngine = (() => {
       toolpaths[toolpaths.length - 1].endLine = lines.length - 1;
     }
 
-    // Add program preamble if first toolpath doesn't start at line 0
+    // Add program header if first toolpath doesn't start at line 0
     const result = [];
     if (toolpaths.length > 0 && toolpaths[0].startLine > 0) {
       result.push({
@@ -413,12 +481,12 @@ const DiffEngine = (() => {
     // Check for program end (M30)
     if (result.length > 0) {
       const lastTp = result[result.length - 1];
-      for (let i = lastTp.endLine; i >= lastTp.anchorLine + 1; i--) {
+      const searchStart = lastTp.anchorLine >= 0 ? lastTp.anchorLine + 1 : lastTp.startLine;
+      for (let i = lastTp.endLine; i >= searchStart; i--) {
         const p = parsedLines[i];
         if (p.mCodes.some(m => parseFloat(m.replace(/^M/i, '')) === 30)) {
-          // Split: find where the end sequence starts (walk back from M30)
           let endStart = i;
-          for (let j = i - 1; j > lastTp.anchorLine; j--) {
+          for (let j = i - 1; j > searchStart; j--) {
             const pj = parsedLines[j];
             if (pj.isBlank || pj.mCodes.length > 0 ||
                 pj.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 28 || parseFloat(g.replace(/^G/i, '')) === 53) ||
@@ -447,6 +515,72 @@ const DiffEngine = (() => {
       }
     }
 
+    return result;
+  }
+
+  /**
+   * Fallback: build toolpath list from G100 anchors only (no comment-pairs found).
+   */
+  function buildFromG100Only(lines, parsedLines, g100Anchors) {
+    const PREAMBLE_CODES = new Set(['G28', 'G53', 'G90', 'G49', 'G69', 'G54', 'G55', 'G56', 'G57', 'G58', 'G59', 'G53.1', 'G68.2']);
+    const PREAMBLE_MCODES = new Set(['M05', 'M09', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M01', 'M141']);
+    const CUTTING_GCODES = new Set([1, 2, 3]);
+    const toolpaths = [];
+
+    for (let a = 0; a < g100Anchors.length; a++) {
+      const anchor = g100Anchors[a];
+      let preambleStart = anchor.lineIndex;
+      const minLine = a > 0 ? g100Anchors[a - 1].lineIndex + 1 : 0;
+      const maxBack = Math.max(minLine, anchor.lineIndex - 40);
+
+      for (let i = anchor.lineIndex - 1; i >= maxBack; i--) {
+        const p = parsedLines[i];
+        if (p.gCodes.length > 0) {
+          const hasCutting = p.gCodes.some(g => CUTTING_GCODES.has(parseFloat(g.replace(/^G/i, ''))));
+          if (hasCutting && Object.keys(p.axes).length > 0) break;
+        }
+        if (p.gCodes.length === 0 && p.mCodes.length === 0 &&
+            Object.keys(p.axes).length > 0 && !p.isCommentOnly && !p.isBlank) break;
+
+        const isPreambleG = p.gCodes.some(g => PREAMBLE_CODES.has(g.replace(/^G0*/i, 'G').toUpperCase()));
+        const isPreambleM = p.mCodes.some(m => PREAMBLE_MCODES.has(m.replace(/^M0*/i, 'M').toUpperCase()));
+        const isRapid = p.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 0);
+
+        if (p.isBlank || p.isCommentOnly || isPreambleG || isPreambleM || isRapid ||
+            (p.gCodes.length === 0 && p.mCodes.length === 0 && Object.keys(p.axes).length === 0 && !p.isBlank)) {
+          preambleStart = i;
+        } else break;
+      }
+
+      let name = '', opType = '', nameFound = false;
+      for (let i = preambleStart; i < anchor.lineIndex; i++) {
+        if (parsedLines[i].isCommentOnly && parsedLines[i].comment) {
+          if (!nameFound) { name = parsedLines[i].comment; nameFound = true; }
+          else if (!opType) { opType = parsedLines[i].comment; }
+        }
+      }
+
+      toolpaths.push({
+        id: toolpaths.length, type: 'toolpath', name, opType,
+        toolNumber: anchor.toolNumber, nNumber: anchor.nNumber,
+        spindleSpeed: anchor.spindleSpeed, startLine: preambleStart,
+        anchorLine: anchor.lineIndex, endLine: lines.length - 1
+      });
+    }
+
+    for (let i = 0; i < toolpaths.length - 1; i++) {
+      toolpaths[i].endLine = toolpaths[i + 1].startLine - 1;
+    }
+
+    const result = [];
+    if (toolpaths.length > 0 && toolpaths[0].startLine > 0) {
+      result.push({
+        id: 0, type: 'preamble', name: 'Program Header', opType: '',
+        toolNumber: null, nNumber: null, spindleSpeed: null,
+        startLine: 0, anchorLine: -1, endLine: toolpaths[0].startLine - 1
+      });
+    }
+    for (const tp of toolpaths) { tp.id = result.length; result.push(tp); }
     return result;
   }
 
@@ -822,6 +956,8 @@ const DiffEngine = (() => {
     // Segment into toolpaths (for noise detection and UI)
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
     const rightToolpaths = segmentIntoToolpaths(rightLines, rightParsed);
+    console.log('Left toolpaths:', leftToolpaths.map(t => `${t.type}[${t.startLine+1}-${t.endLine+1}] "${t.name}" T${t.toolNumber}`));
+    console.log('Right toolpaths:', rightToolpaths.map(t => `${t.type}[${t.startLine+1}-${t.endLine+1}] "${t.name}" T${t.toolNumber}`));
 
     if (n === 0 && m === 0) return { ops: [], leftToolpaths, rightToolpaths };
 
