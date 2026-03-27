@@ -121,6 +121,8 @@ N120 M30`;
 
   // === Button bindings ===
   function bindButtons() {
+    document.getElementById('btn-new').addEventListener('click', startNew);
+
     document.getElementById('btn-open-left').addEventListener('click', () => {
       document.getElementById('file-input-left').click();
     });
@@ -583,6 +585,21 @@ N120 M30`;
   }
 
   // === Actions ===
+  function startNew() {
+    Editor.setValue('left', '');
+    Editor.setValue('right', '');
+    Editor.setFilename('left', 'untitled');
+    Editor.setFilename('right', 'untitled');
+    currentDiff = [];
+    diffPositions = [];
+    currentDiffIndex = -1;
+    currentToolpaths = { left: [], right: [] };
+    disabledToolpathIds.clear();
+    clearDecorations();
+    buildToolpathMenu();
+    updateStatusBar({ critical: 0, minor: 0, noise: 0, added: 0, removed: 0 }, 0, 0);
+  }
+
   function swapPanes() {
     const leftText = Editor.getValue('left');
     const rightText = Editor.getValue('right');
