@@ -18,8 +18,21 @@
       <button class="btn" id="btn-save-left">Save Left</button>
       <button class="btn" id="btn-save-right">Save Right</button>
       <button class="btn btn-accent" id="btn-example">Load Example</button>
+      <button class="btn" id="btn-toolpath-menu" title="Toggle toolpath sections">Toolpaths &#9662;</button>
     </div>
     <button id="settings-toggle" title="Settings">&#9881;</button>
+  </div>
+
+  <!-- Toolpath toggle menu (dropdown) -->
+  <div id="toolpath-menu" class="dropdown-panel hidden">
+    <div class="dropdown-header">
+      <span>Toolpath Sections</span>
+      <span class="dropdown-actions">
+        <a href="#" id="tp-select-all">All</a>
+        <a href="#" id="tp-select-none">None</a>
+      </span>
+    </div>
+    <div id="toolpath-list"></div>
   </div>
 
   <!-- Color legend strip -->
@@ -149,7 +162,7 @@
   <!-- Status bar -->
   <div id="status-bar">
     <div id="status-left">
-      <span>Toolpaths: <span id="stat-toolpaths">0</span></span>
+      <span>Toolpaths: <span id="stat-toolpaths-left">0</span> / <span id="stat-toolpaths-right">0</span></span>
       <span>Critical: <span class="status-major" id="stat-major">0</span></span>
       <span>Minor: <span class="status-minor-count" id="stat-minor-count">0</span></span>
       <span>Noise: <span class="status-noise" id="stat-noise">0</span></span>

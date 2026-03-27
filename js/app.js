@@ -25,6 +25,7 @@ const App = (() => {
   let diffPositions = []; // indices into currentDiff that are actual diffs
   let currentDiffIndex = -1;
   let currentToolpaths = { left: [], right: [] };
+  let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
 
   // === Example data ===
   const EXAMPLE_LEFT = `O1000 (PART PROGRAM - KNOWN GOOD)
@@ -145,6 +146,31 @@ N120 M30`;
     document.getElementById('btn-next-diff').addEventListener('click', () => navigateDiff(1));
 
     document.getElementById('settings-toggle').addEventListener('click', toggleSettings);
+
+    // Toolpath menu
+    document.getElementById('btn-toolpath-menu').addEventListener('click', toggleToolpathMenu);
+    document.getElementById('tp-select-all').addEventListener('click', (e) => {
+      e.preventDefault();
+      disabledToolpathIds.clear();
+      buildToolpathMenu();
+      applyDecorations();
+    });
+    document.getElementById('tp-select-none').addEventListener('click', (e) => {
+      e.preventDefault();
+      for (const tp of currentToolpaths.left) disabledToolpathIds.add(tp.id);
+      for (const tp of currentToolpaths.right) disabledToolpathIds.add('R' + tp.id);
+      buildToolpathMenu();
+      applyDecorations();
+    });
+
+    // Close toolpath menu when clicking outside
+    document.addEventListener('click', (e) => {
+      const menu = document.getElementById('toolpath-menu');
+      const btn = document.getElementById('btn-toolpath-menu');
+      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) {
+        menu.classList.add('hidden');
+      }
+    });
   }
 
   // === Settings bindings ===
@@ -232,6 +258,97 @@ N120 M30`;
     }
   }
 
+  // === Toolpath section filtering ===
+  function getToolpathForLine(lineIdx, toolpaths) {
+    for (let s = toolpaths.length - 1; s >= 0; s--) {
+      if (lineIdx >= toolpaths[s].startLine) return toolpaths[s];
+    }
+    return toolpaths[0] || null;
+  }
+
+  function isOpDisabled(op) {
+    if (disabledToolpathIds.size === 0) return false;
+    if (op.leftIdx !== undefined) {
+      const tp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
+      if (tp && disabledToolpathIds.has(tp.id)) return true;
+    }
+    if (op.rightIdx !== undefined && op.leftIdx === undefined) {
+      const tp = getToolpathForLine(op.rightIdx, currentToolpaths.right);
+      if (tp && disabledToolpathIds.has('R' + tp.id)) return true;
+    }
+    return false;
+  }
+
+  function buildToolpathMenu() {
+    const list = document.getElementById('toolpath-list');
+    if (!list) return;
+    list.innerHTML = '';
+
+    const leftTps = currentToolpaths.left;
+    const rightTps = currentToolpaths.right;
+
+    function addSection(label, toolpaths, prefix) {
+      if (toolpaths.length === 0) return;
+      const header = document.createElement('div');
+      header.className = 'tp-item-header';
+      header.textContent = label;
+      list.appendChild(header);
+
+      for (const tp of toolpaths) {
+        const id = prefix + tp.id;
+        const row = document.createElement('label');
+        row.className = 'tp-item' + (disabledToolpathIds.has(id) ? ' tp-disabled' : '');
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !disabledToolpathIds.has(id);
+        cb.dataset.tpId = id;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'tp-item-name';
+        const displayName = tp.type === 'preamble' ? 'Program Header' :
+                           tp.type === 'program_end' ? 'Program End' :
+                           (tp.opType ? tp.opType : tp.name) || 'Section ' + tp.id;
+        nameSpan.textContent = displayName;
+        nameSpan.title = tp.name + (tp.opType ? ' / ' + tp.opType : '');
+
+        const toolSpan = document.createElement('span');
+        toolSpan.className = 'tp-item-tool';
+        toolSpan.textContent = tp.toolNumber !== null ? 'T' + tp.toolNumber : '';
+
+        const lineSpan = document.createElement('span');
+        lineSpan.className = 'tp-item-lines';
+        lineSpan.textContent = (tp.startLine + 1) + '-' + (tp.endLine + 1);
+
+        row.appendChild(cb);
+        row.appendChild(nameSpan);
+        row.appendChild(toolSpan);
+        row.appendChild(lineSpan);
+        list.appendChild(row);
+
+        cb.addEventListener('change', () => {
+          if (cb.checked) {
+            disabledToolpathIds.delete(id);
+            row.classList.remove('tp-disabled');
+          } else {
+            disabledToolpathIds.add(id);
+            row.classList.add('tp-disabled');
+          }
+          applyDecorations();
+        });
+      }
+    }
+
+    addSection('Left (Machine)', leftTps, '');
+    if (rightTps.length > 0) {
+      addSection('Right (CAM)', rightTps, 'R');
+    }
+  }
+
+  function toggleToolpathMenu() {
+    document.getElementById('toolpath-menu').classList.toggle('hidden');
+  }
+
   // === Core diff execution ===
   function runDiff() {
     const leftText = Editor.getValue('left');
@@ -258,7 +375,24 @@ N120 M30`;
     currentDiff = diffResult.ops;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
 
-    // Build decorations AND alignment padding
+    // Reset disabled toolpaths and rebuild menu
+    disabledToolpathIds.clear();
+    buildToolpathMenu();
+
+    // Apply decorations and update UI
+    applyDecorations();
+  }
+
+  /**
+   * Build decorations from currentDiff, applying toolpath filtering.
+   * Called from runDiff() and when toolpath toggles change.
+   */
+  function applyDecorations() {
+    const leftText = Editor.getValue('left');
+    const rightText = Editor.getValue('right');
+    const leftLineCount = leftText ? leftText.split('\n').length : 0;
+    const rightLineCount = rightText ? rightText.split('\n').length : 0;
+
     const leftDecos = [];
     const rightDecos = [];
     const leftPadding = {};
@@ -270,6 +404,10 @@ N120 M30`;
 
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
+
+      // Skip ops in disabled toolpath sections
+      if (isOpDisabled(op)) continue;
+
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
       const isNoise = op.type === 'noise' || op.type === 'coordinate';
 
@@ -312,25 +450,23 @@ N120 M30`;
       } else if (op.type === 'noise-added') {
         if (!settings.hideNoise) {
           rightDecos.push({ line: op.rightIdx, type: 'noise' });
-          leftPendingPad++;  // preserve alignment
+          leftPendingPad++;
         }
-        // never add to diffPositions — navigation skips noise
 
       } else if (op.type === 'noise-removed') {
         if (!settings.hideNoise) {
           leftDecos.push({ line: op.leftIdx, type: 'noise' });
-          rightPendingPad++;  // preserve alignment
+          rightPendingPad++;
         }
-        // never add to diffPositions — navigation skips noise
       }
     }
 
     // Trailing padding
     if (leftPendingPad > 0) {
-      leftPadding[leftLines.length] = (leftPadding[leftLines.length] || 0) + leftPendingPad;
+      leftPadding[leftLineCount] = (leftPadding[leftLineCount] || 0) + leftPendingPad;
     }
     if (rightPendingPad > 0) {
-      rightPadding[rightLines.length] = (rightPadding[rightLines.length] || 0) + rightPendingPad;
+      rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + rightPendingPad;
     }
 
     Editor.setDecorations('left', leftDecos, leftPadding);
@@ -341,7 +477,7 @@ N120 M30`;
 
     // Update status bar
     const stats = DiffEngine.countStats(currentDiff);
-    updateStatusBar(stats, leftLines.length, rightLines.length);
+    updateStatusBar(stats, leftLineCount, rightLineCount);
 
     // Reset diff navigation
     currentDiffIndex = -1;
@@ -386,10 +522,13 @@ N120 M30`;
     document.getElementById('stat-lines-left').textContent = leftLines;
     document.getElementById('stat-lines-right').textContent = rightLines;
 
-    // Toolpath count (only real toolpaths, not preamble/end)
-    const tpCount = currentToolpaths.left.filter(t => t.type === 'toolpath').length;
-    const tpEl = document.getElementById('stat-toolpaths');
-    if (tpEl) tpEl.textContent = tpCount;
+    // Toolpath counts (only real toolpaths, not preamble/end)
+    const leftTpCount = currentToolpaths.left.filter(t => t.type === 'toolpath').length;
+    const rightTpCount = currentToolpaths.right.filter(t => t.type === 'toolpath').length;
+    const tpLeftEl = document.getElementById('stat-toolpaths-left');
+    const tpRightEl = document.getElementById('stat-toolpaths-right');
+    if (tpLeftEl) tpLeftEl.textContent = leftTpCount;
+    if (tpRightEl) tpRightEl.textContent = rightTpCount;
 
     // Line count warning
     const center = document.getElementById('status-center');
