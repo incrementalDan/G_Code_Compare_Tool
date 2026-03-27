@@ -776,6 +776,28 @@ const DiffEngine = (() => {
    * Noisy sections: coordinate diffs → 'noise' (rare Z stays critical)
    * Non-noisy sections: coordinate diffs classified by tolerance thresholds
    */
+  /**
+   * Returns true if the only 'critical' tokenDiffs are G-code changes between
+   * motion codes (G0/G1/G2/G3). These interchange freely in adaptive toolpaths
+   * and should be treated as noise in noisy sections.
+   */
+  function isMotionCodeOnlyChange(tokenDiffs) {
+    if (!tokenDiffs) return false;
+    for (const td of tokenDiffs) {
+      if (td.severity !== 'critical') continue;
+      if (td.field !== 'gCode') return false;
+      const allMotion = (vals) => {
+        if (!vals) return true;
+        return vals.split(',').every(g => {
+          const num = parseFloat(g.replace(/^G/i, ''));
+          return num >= 0 && num <= 3;
+        });
+      };
+      if (!allMotion(td.leftVal) || !allMotion(td.rightVal)) return false;
+    }
+    return true;
+  }
+
   function detectAdaptiveNoise(sectionOps, noiseThreshold, minorThreshold, majorThreshold) {
     let coordOnlyCount = 0;
     let modifiedCount = 0;
@@ -784,16 +806,19 @@ const DiffEngine = (() => {
     for (const op of sectionOps) {
       if (op.type === 'equal') continue;
       if (op.type === 'added' || op.type === 'removed') {
-        // Unpaired coord-only lines count toward noise threshold
         if (op.coordOnly) { modifiedCount++; coordOnlyCount++; }
         continue;
       }
       modifiedCount++;
       if (op.tokenDiffs) {
         const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
+        // Motion-code-only G-code changes (G0/G1/G2/G3) count as coordinate noise
+        const effectiveCritical = hasCritical && !isMotionCodeOnlyChange(op.tokenDiffs);
         const hasCoord = op.tokenDiffs.some(d => d.severity === 'coordinate' || d.severity === 'coordinate-z');
-        const onlyCoord = !hasCritical && hasCoord;
-        const onlyZ = onlyCoord && op.tokenDiffs.every(d => d.severity === 'coordinate-z' || d.severity === 'equal');
+        const onlyCoord = !effectiveCritical && hasCoord;
+        const onlyZ = onlyCoord && op.tokenDiffs.every(d =>
+          d.severity === 'coordinate-z' || d.severity === 'coordinate' ||
+          d.severity === 'equal' || (d.severity === 'critical' && d.field === 'gCode' && isMotionCodeOnlyChange([d])));
         if (onlyCoord) coordOnlyCount++;
         if (onlyZ) zOnlyCount++;
       }
@@ -803,22 +828,23 @@ const DiffEngine = (() => {
                     (modifiedCount > 5 && coordOnlyCount / modifiedCount > 0.6);
 
     if (isNoisy) {
-      // Noisy section: mark coordinate-only lines as noise, preserve rare Z
       const preserveZ = zOnlyCount <= 5;
 
       for (const op of sectionOps) {
-        // Unpaired coord-only lines → noise-added / noise-removed
         if (op.type === 'added' && op.coordOnly) { op.type = 'noise-added'; continue; }
         if (op.type === 'removed' && op.coordOnly) { op.type = 'noise-removed'; continue; }
 
         if (!op.tokenDiffs) continue;
         const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
-        if (hasCritical) continue;
+        // Let truly critical ops through; motion-code-only changes become noise
+        if (hasCritical && !isMotionCodeOnlyChange(op.tokenDiffs)) continue;
 
         const hasCoord = op.tokenDiffs.some(d => d.severity === 'coordinate' || d.severity === 'coordinate-z');
-        const onlyZ = op.tokenDiffs.every(d => d.severity === 'coordinate-z' || d.severity === 'equal');
+        const onlyZ = op.tokenDiffs.every(d =>
+          d.severity === 'coordinate-z' || d.severity === 'equal' ||
+          (d.severity === 'critical' && d.field === 'gCode' && isMotionCodeOnlyChange([d])));
 
-        if (hasCoord) {
+        if (hasCoord || isMotionCodeOnlyChange(op.tokenDiffs)) {
           if (onlyZ && preserveZ) {
             op.type = 'critical';
           } else {
@@ -827,7 +853,6 @@ const DiffEngine = (() => {
         }
       }
     } else {
-      // Non-noisy section: apply tolerance thresholds to coordinate diffs
       applyToleranceClassification(sectionOps, minorThreshold, majorThreshold);
     }
   }
@@ -915,7 +940,37 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
-  // Main Semantic Diff — Whole-File LCS
+  // Toolpath Matching
+  // =====================================================
+
+  function tpKey(tp) {
+    if (tp.type === 'preamble') return 'PREAMBLE';
+    if (tp.type === 'program_end') return 'PROGRAM_END';
+    return (tp.name || '') + '|' + (tp.opType || '') + '|T' + tp.toolNumber;
+  }
+
+  function matchToolpaths(leftTPs, rightTPs) {
+    const leftKeys = leftTPs.map(tp => tpKey(tp));
+    const rightKeys = rightTPs.map(tp => tpKey(tp));
+
+    const dp = buildLCSTable(leftKeys, rightKeys, leftKeys.length, rightKeys.length);
+    const tpOps = backtrackLCS(leftKeys, rightKeys, dp, leftKeys.length, rightKeys.length);
+
+    const result = [];
+    for (const op of tpOps) {
+      if (op.type === 'equal') {
+        result.push({ left: leftTPs[op.leftIdx], right: rightTPs[op.rightIdx] });
+      } else if (op.type === 'removed') {
+        result.push({ left: leftTPs[op.leftIdx], right: null });
+      } else {
+        result.push({ left: null, right: rightTPs[op.rightIdx] });
+      }
+    }
+    return result;
+  }
+
+  // =====================================================
+  // Main Semantic Diff — Anchor-Based Segmented LCS
   // =====================================================
 
   function computeSemanticDiff(leftLines, rightLines, opts) {
@@ -933,40 +988,63 @@ const DiffEngine = (() => {
     const leftModal = trackModalState(leftParsed);
     const rightModal = trackModalState(rightParsed);
 
-    // Build fingerprints for ALL non-blank lines (whole file)
-    const leftFP = [];
-    const rightFP = [];
-    const leftIdxMap = [];
-    const rightIdxMap = [];
-
-    for (let i = 0; i < leftParsed.length; i++) {
-      if (leftParsed[i].isBlank) continue;
-      leftFP.push(fingerprint(leftParsed[i], rules, leftModal[i]));
-      leftIdxMap.push(i);
-    }
-    for (let i = 0; i < rightParsed.length; i++) {
-      if (rightParsed[i].isBlank) continue;
-      rightFP.push(fingerprint(rightParsed[i], rules, rightModal[i]));
-      rightIdxMap.push(i);
-    }
-
-    const n = leftFP.length;
-    const m = rightFP.length;
-
-    // Segment into toolpaths (for noise detection and UI)
+    // Segment into toolpaths
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
     const rightToolpaths = segmentIntoToolpaths(rightLines, rightParsed);
     console.log('Left toolpaths:', leftToolpaths.map(t => `${t.type}[${t.startLine+1}-${t.endLine+1}] "${t.name}" T${t.toolNumber}`));
     console.log('Right toolpaths:', rightToolpaths.map(t => `${t.type}[${t.startLine+1}-${t.endLine+1}] "${t.name}" T${t.toolNumber}`));
 
-    if (n === 0 && m === 0) return { ops: [], leftToolpaths, rightToolpaths };
+    // Match toolpaths between files
+    const tpMatches = matchToolpaths(leftToolpaths, rightToolpaths);
+    console.log('Toolpath matches:', tpMatches.map(m =>
+      m.left && m.right ? `"${m.left.name}" <-> "${m.right.name}"` :
+      m.left ? `"${m.left.name}" (removed)` : `"${m.right.name}" (added)`));
 
-    // Whole-file LCS on fingerprints
-    const dp = buildLCSTable(leftFP, rightFP, n, m);
-    const rawOps = backtrackLCS(leftFP, rightFP, dp, n, m);
+    const allOps = [];
 
-    // Classify each op with token-level comparison
-    const allOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap);
+    for (const match of tpMatches) {
+      if (match.left && match.right) {
+        // Build fingerprints for this segment only
+        const segLeftFP = [], segLeftIdxMap = [];
+        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
+          if (leftParsed[i].isBlank) continue;
+          segLeftFP.push(fingerprint(leftParsed[i], rules, leftModal[i]));
+          segLeftIdxMap.push(i);
+        }
+        const segRightFP = [], segRightIdxMap = [];
+        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
+          if (rightParsed[i].isBlank) continue;
+          segRightFP.push(fingerprint(rightParsed[i], rules, rightModal[i]));
+          segRightIdxMap.push(i);
+        }
+
+        if (segLeftFP.length === 0 && segRightFP.length === 0) continue;
+
+        // Run LCS on this segment
+        const dp = buildLCSTable(segLeftFP, segRightFP, segLeftFP.length, segRightFP.length);
+        const rawOps = backtrackLCS(segLeftFP, segRightFP, dp, segLeftFP.length, segRightFP.length);
+
+        // classifyOps — index maps already point to real line indices
+        const segOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed,
+                                    segLeftIdxMap, segRightIdxMap);
+        allOps.push(...segOps);
+
+      } else if (match.left) {
+        // Entire toolpath removed
+        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
+          if (leftParsed[i].isBlank) continue;
+          allOps.push({ type: 'removed', leftIdx: i, leftLine: leftLines[i],
+                         coordOnly: isCoordOnlyLine(leftParsed[i]) });
+        }
+      } else {
+        // Entire toolpath added
+        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
+          if (rightParsed[i].isBlank) continue;
+          allOps.push({ type: 'added', rightIdx: i, rightLine: rightLines[i],
+                         coordOnly: isCoordOnlyLine(rightParsed[i]) });
+        }
+      }
+    }
 
     // Post-process: apply noise detection per toolpath
     if (suppressNoise) {
