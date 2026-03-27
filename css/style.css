@@ -376,6 +376,15 @@ html, body {
 .diff-bg-removed { background-color: var(--diff-removed); }
 .diff-bg-removed .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
 
+/* Disabled toolpath lines — dimmed with strikethrough line numbers */
+.line-disabled {
+  opacity: 0.3;
+}
+.line-disabled .line-num {
+  text-decoration: line-through;
+  text-decoration-color: #666;
+}
+
 /* G-code syntax tokens — VSCode Dark+ theme */
 .gcode-g { color: #d4d4d4; font-weight: bold; }
 .gcode-m { color: #d4d4d4; font-weight: bold; }
