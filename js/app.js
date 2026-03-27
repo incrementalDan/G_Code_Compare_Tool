@@ -407,6 +407,13 @@ N120 M30`;
       }
     }
 
+    // Un-disable lines that have critical diffs — they must show through
+    for (const op of currentDiff) {
+      if (op.type !== 'critical' && op.type !== 'coordinate-z') continue;
+      if (op.leftIdx !== undefined) leftDisabled.delete(op.leftIdx);
+      if (op.rightIdx !== undefined) rightDisabled.delete(op.rightIdx);
+    }
+
     const leftDecos = [];
     const rightDecos = [];
     const leftPadding = {};
@@ -419,8 +426,9 @@ N120 M30`;
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
 
-      // Skip ops in disabled toolpath sections
-      if (isOpDisabled(op)) continue;
+      // Skip ops in disabled toolpath sections, but let critical diffs through
+      const disabled = isOpDisabled(op);
+      if (disabled && op.type !== 'critical' && op.type !== 'coordinate-z') continue;
 
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
       const isNoise = op.type === 'noise' || op.type === 'coordinate';
@@ -517,8 +525,9 @@ N120 M30`;
       if (op.type === 'equal') continue;
       // Filter noise from gutter
       if (op.type === 'noise' || op.type === 'coordinate' || op.type === 'noise-added' || op.type === 'noise-removed') continue;
-      // Filter disabled toolpath ops from gutter
-      if (isOpDisabled(op)) continue;
+      // Filter disabled toolpath ops from gutter, but let critical diffs through
+      const disabled = isOpDisabled(op);
+      if (disabled && op.type !== 'critical' && op.type !== 'coordinate-z') continue;
 
       const dt = decoType(op.type);
       const top = Math.round((i / total) * height);
