@@ -1052,7 +1052,7 @@ const DiffEngine = (() => {
         noiseThreshold, minorThreshold, majorThreshold, leftToolpaths, rightToolpaths);
     }
 
-    return { ops: allOps, leftToolpaths, rightToolpaths };
+    return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches };
   }
 
   /**
