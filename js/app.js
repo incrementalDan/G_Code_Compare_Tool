@@ -68,6 +68,34 @@ N120 M30`;
       runDiff
     );
 
+    // Wire inline toolpath separator callbacks
+    const sepToggle = (tpId, checked) => {
+      if (checked) disabledToolpathIds.delete(tpId);
+      else disabledToolpathIds.add(tpId);
+      applyDecorations();
+    };
+    const sepClick = (tpId) => {
+      // Find the toolpath and scroll to it
+      const isRight = tpId.startsWith('R');
+      if (isRight) {
+        const rId = parseInt(tpId.slice(1));
+        const rtp = currentToolpaths.right.find(t => t.id === rId);
+        if (rtp) Editor.scrollToLine('right', rtp.startLine);
+        // Also scroll left to matching toolpath by index
+        const ltp = currentToolpaths.left[rId];
+        if (ltp) Editor.scrollToLine('left', ltp.startLine);
+      } else {
+        const lId = parseInt(tpId);
+        const ltp = currentToolpaths.left.find(t => t.id === lId);
+        if (ltp) Editor.scrollToLine('left', ltp.startLine);
+        // Also scroll right to matching toolpath by index
+        const rtp = currentToolpaths.right[lId];
+        if (rtp) Editor.scrollToLine('right', rtp.startLine);
+      }
+    };
+    Editor.setSeparatorCallbacks('left', { onClick: sepClick, onToggle: sepToggle });
+    Editor.setSeparatorCallbacks('right', { onClick: sepClick, onToggle: sepToggle });
+
     bindButtons();
     bindSettings();
     bindKeyboard();
@@ -148,31 +176,6 @@ N120 M30`;
     document.getElementById('btn-next-diff').addEventListener('click', () => navigateDiff(1));
 
     document.getElementById('settings-toggle').addEventListener('click', toggleSettings);
-
-    // Toolpath menu
-    document.getElementById('btn-toolpath-menu').addEventListener('click', toggleToolpathMenu);
-    document.getElementById('tp-select-all').addEventListener('click', (e) => {
-      e.preventDefault();
-      disabledToolpathIds.clear();
-      buildToolpathMenu();
-      applyDecorations();
-    });
-    document.getElementById('tp-select-none').addEventListener('click', (e) => {
-      e.preventDefault();
-      for (const tp of currentToolpaths.left) disabledToolpathIds.add(String(tp.id));
-      for (const tp of currentToolpaths.right) disabledToolpathIds.add('R' + tp.id);
-      buildToolpathMenu();
-      applyDecorations();
-    });
-
-    // Close toolpath menu when clicking outside
-    document.addEventListener('click', (e) => {
-      const menu = document.getElementById('toolpath-menu');
-      const btn = document.getElementById('btn-toolpath-menu');
-      if (!menu.classList.contains('hidden') && !menu.contains(e.target) && e.target !== btn) {
-        menu.classList.add('hidden');
-      }
-    });
   }
 
   // === Settings bindings ===
@@ -260,6 +263,20 @@ N120 M30`;
     }
   }
 
+  // === Toolpath helpers ===
+  function buildTpLabel(tp) {
+    if (tp.type === 'preamble') return 'Program Header';
+    if (tp.type === 'program_end') return 'Program End';
+    const parts = [];
+    if (tp.nNumber) parts.push(tp.nNumber);
+    if (tp.toolNumber !== null) parts.push('T' + tp.toolNumber);
+    const desc = [];
+    if (tp.name) desc.push(tp.name);
+    if (tp.opType) desc.push(tp.opType);
+    if (desc.length > 0) parts.push(desc.join(' | '));
+    return parts.join(' - ') || 'Section ' + tp.id;
+  }
+
   // === Toolpath section filtering ===
   function getToolpathForLine(lineIdx, toolpaths) {
     for (let s = toolpaths.length - 1; s >= 0; s--) {
@@ -279,76 +296,6 @@ N120 M30`;
       if (tp && disabledToolpathIds.has('R' + tp.id)) return true;
     }
     return false;
-  }
-
-  function buildToolpathMenu() {
-    const list = document.getElementById('toolpath-list');
-    if (!list) return;
-    list.innerHTML = '';
-
-    const leftTps = currentToolpaths.left;
-    const rightTps = currentToolpaths.right;
-
-    function addSection(label, toolpaths, prefix) {
-      if (toolpaths.length === 0) return;
-      const header = document.createElement('div');
-      header.className = 'tp-item-header';
-      header.textContent = label;
-      list.appendChild(header);
-
-      for (const tp of toolpaths) {
-        const id = prefix + tp.id;
-        const row = document.createElement('label');
-        row.className = 'tp-item' + (disabledToolpathIds.has(id) ? ' tp-disabled' : '');
-
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = !disabledToolpathIds.has(id);
-        cb.dataset.tpId = id;
-
-        const nameSpan = document.createElement('span');
-        nameSpan.className = 'tp-item-name';
-        const displayName = tp.type === 'preamble' ? 'Program Header' :
-                           tp.type === 'program_end' ? 'Program End' :
-                           (tp.opType ? tp.opType : tp.name) || 'Section ' + tp.id;
-        nameSpan.textContent = displayName;
-        nameSpan.title = tp.name + (tp.opType ? ' / ' + tp.opType : '');
-
-        const toolSpan = document.createElement('span');
-        toolSpan.className = 'tp-item-tool';
-        toolSpan.textContent = tp.toolNumber !== null ? 'T' + tp.toolNumber : '';
-
-        const lineSpan = document.createElement('span');
-        lineSpan.className = 'tp-item-lines';
-        lineSpan.textContent = (tp.startLine + 1) + '-' + (tp.endLine + 1);
-
-        row.appendChild(cb);
-        row.appendChild(nameSpan);
-        row.appendChild(toolSpan);
-        row.appendChild(lineSpan);
-        list.appendChild(row);
-
-        cb.addEventListener('change', () => {
-          if (cb.checked) {
-            disabledToolpathIds.delete(id);
-            row.classList.remove('tp-disabled');
-          } else {
-            disabledToolpathIds.add(id);
-            row.classList.add('tp-disabled');
-          }
-          applyDecorations();
-        });
-      }
-    }
-
-    addSection('Left (Machine)', leftTps, '');
-    if (rightTps.length > 0) {
-      addSection('Right (CAM)', rightTps, 'R');
-    }
-  }
-
-  function toggleToolpathMenu() {
-    document.getElementById('toolpath-menu').classList.toggle('hidden');
   }
 
   // === Core diff execution ===
@@ -377,9 +324,8 @@ N120 M30`;
     currentDiff = diffResult.ops;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
 
-    // Reset disabled toolpaths and rebuild menu
+    // Reset disabled toolpaths
     disabledToolpathIds.clear();
-    buildToolpathMenu();
 
     // Apply decorations and update UI
     applyDecorations();
@@ -493,8 +439,26 @@ N120 M30`;
       rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + rightPendingPad;
     }
 
-    Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled);
-    Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled);
+    // Build toolpath separator data for inline display
+    const leftSeparators = {};
+    for (const tp of currentToolpaths.left) {
+      leftSeparators[tp.startLine] = {
+        id: String(tp.id),
+        label: buildTpLabel(tp),
+        disabled: disabledToolpathIds.has(String(tp.id))
+      };
+    }
+    const rightSeparators = {};
+    for (const tp of currentToolpaths.right) {
+      rightSeparators[tp.startLine] = {
+        id: 'R' + tp.id,
+        label: buildTpLabel(tp),
+        disabled: disabledToolpathIds.has('R' + tp.id)
+      };
+    }
+
+    Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
+    Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
 
     // Update diff markers in center gutter
     updateDiffMarkers();
@@ -596,7 +560,6 @@ N120 M30`;
     currentToolpaths = { left: [], right: [] };
     disabledToolpathIds.clear();
     clearDecorations();
-    buildToolpathMenu();
     updateStatusBar({ critical: 0, minor: 0, noise: 0, added: 0, removed: 0 }, 0, 0);
   }
 
