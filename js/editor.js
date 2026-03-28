@@ -35,27 +35,39 @@ const Editor = (() => {
     const display = document.createElement('div');
     display.className = 'editor-display';
 
+    // Toolpath stack overlays (fixed position at top/bottom of visible area)
+    const stackTop = document.createElement('div');
+    stackTop.className = 'tp-stack tp-stack-top';
+    const stackBottom = document.createElement('div');
+    stackBottom.className = 'tp-stack tp-stack-bottom';
+
     wrapper.appendChild(display);
     wrapper.appendChild(textarea);
     container.appendChild(wrapper);
+    container.appendChild(stackTop);
+    container.appendChild(stackBottom);
 
     const state = {
       side,
       wrapper,
       textarea,
       display,
+      stackTop,
+      stackBottom,
       content: '',
-      decorations: {},  // lineIndex -> {type, tokenDiffs}
+      decorations: {},
       filename: 'untitled',
-      alignmentPadding: {}, // lineIndex -> number of padding lines to insert BEFORE this line
-      toolpathSeparators: {}, // lineIndex -> {id, label, disabled}
+      alignmentPadding: {},
+      toolpathSeparators: {},
+      separatorPositions: [], // [{id, label, disabled, offsetTop}] cached after render
       onSeparatorClick: null,
       onSeparatorToggle: null
     };
 
-    // Focus textarea on click anywhere in the editor
+    // Focus textarea on click anywhere in the editor — but not on separators
     display.addEventListener('mousedown', (e) => {
-      // Calculate which line was clicked
+      if (e.target.closest('.tp-separator')) return;
+
       const rect = display.getBoundingClientRect();
       const scrollTop = wrapper.scrollTop;
       const y = e.clientY - rect.top + scrollTop;
@@ -63,10 +75,10 @@ const Editor = (() => {
       const clickedLine = Math.floor(y / lineHeight);
       const lines = state.content.split('\n');
 
-      // Map display line to actual line (accounting for padding)
       let actualLine = 0;
       let displayLine = 0;
       for (let i = 0; i < lines.length; i++) {
+        if (state.toolpathSeparators[i]) displayLine++;
         const padding = state.alignmentPadding[i] || 0;
         displayLine += padding;
         if (displayLine === clickedLine || (displayLine <= clickedLine && clickedLine < displayLine + 1)) {
@@ -81,7 +93,6 @@ const Editor = (() => {
         actualLine = i;
       }
 
-      // Set cursor position in textarea
       let pos = 0;
       for (let i = 0; i < actualLine && i < lines.length; i++) {
         pos += lines[i].length + 1;
@@ -94,9 +105,9 @@ const Editor = (() => {
 
     // Sync scrolling from wrapper
     wrapper.addEventListener('scroll', () => {
-      // Keep textarea scroll in sync (it's positioned absolute)
       textarea.scrollTop = wrapper.scrollTop;
       textarea.scrollLeft = wrapper.scrollLeft;
+      updateStacks(state);
     });
 
     // Input handling
@@ -140,9 +151,74 @@ const Editor = (() => {
     if (el) el.textContent = `Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
   }
 
-  /**
-   * Render the display area with line numbers, syntax highlighting, and diff colors.
-   */
+  // =====================================================
+  // Toolpath Stack Overlays
+  // =====================================================
+
+  function updateStacks(state) {
+    if (!state.separatorPositions.length) {
+      state.stackTop.innerHTML = '';
+      state.stackBottom.innerHTML = '';
+      return;
+    }
+
+    const scrollTop = state.wrapper.scrollTop;
+    const viewHeight = state.wrapper.clientHeight;
+    const scrollBottom = scrollTop + viewHeight;
+
+    let topHtml = '';
+    let bottomHtml = '';
+
+    for (const sep of state.separatorPositions) {
+      const sepTop = sep.offsetTop;
+      const sepBottom = sepTop + 20;
+
+      if (sepBottom <= scrollTop) {
+        // Separator is above viewport → stack at top
+        topHtml += buildStackItem(sep);
+      } else if (sepTop >= scrollBottom) {
+        // Separator is below viewport → stack at bottom
+        bottomHtml += buildStackItem(sep);
+      }
+      // else: separator is visible inline, don't stack it
+    }
+
+    state.stackTop.innerHTML = topHtml;
+    state.stackBottom.innerHTML = bottomHtml;
+
+    // Bind stack item events
+    bindStackEvents(state.stackTop, state);
+    bindStackEvents(state.stackBottom, state);
+  }
+
+  function buildStackItem(sep) {
+    const checkedAttr = sep.disabled ? '' : ' checked';
+    const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+    return `<div class="tp-stack-item${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+      `<input type="checkbox" class="tp-sep-cb"${checkedAttr}>` +
+      `<span class="tp-stack-label">${escapeHtml(sep.label)}</span>` +
+      `</div>`;
+  }
+
+  function bindStackEvents(container, state) {
+    container.querySelectorAll('.tp-stack-item').forEach(el => {
+      const cb = el.querySelector('.tp-sep-cb');
+      const tpId = el.dataset.tpId;
+      el.addEventListener('click', (e) => {
+        if (e.target === cb) return;
+        if (state.onSeparatorClick) state.onSeparatorClick(tpId);
+      });
+      cb.addEventListener('change', (e) => {
+        e.stopPropagation();
+        if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
+      });
+    });
+  }
+
+  // =====================================================
+  // Rendering
+  // =====================================================
+
   function escapeHtml(text) {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
@@ -153,7 +229,7 @@ const Editor = (() => {
     let sepCount = 0;
 
     for (let i = 0; i < lines.length; i++) {
-      // Insert toolpath separator before this line (before padding)
+      // Insert toolpath separator before this line
       const sep = state.toolpathSeparators[i];
       if (sep) {
         sepCount++;
@@ -185,7 +261,7 @@ const Editor = (() => {
 
     state.display.innerHTML = html;
 
-    // Bind separator events
+    // Bind inline separator events
     state.display.querySelectorAll('.tp-separator').forEach(el => {
       const cb = el.querySelector('.tp-sep-cb');
       const tpId = el.dataset.tpId;
@@ -193,8 +269,22 @@ const Editor = (() => {
         if (e.target === cb) return;
         if (state.onSeparatorClick) state.onSeparatorClick(tpId);
       });
-      cb.addEventListener('change', () => {
+      cb.addEventListener('change', (e) => {
+        e.stopPropagation();
         if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
+      });
+    });
+
+    // Cache separator positions for stack overlay updates
+    state.separatorPositions = [];
+    state.display.querySelectorAll('.tp-separator').forEach(el => {
+      const tpId = el.dataset.tpId;
+      const sep = Object.values(state.toolpathSeparators).find(s => s.id === tpId);
+      state.separatorPositions.push({
+        id: tpId,
+        label: sep ? sep.label : '',
+        disabled: sep ? sep.disabled : false,
+        offsetTop: el.offsetTop
       });
     });
 
@@ -203,11 +293,13 @@ const Editor = (() => {
     const padTotal = Object.values(state.alignmentPadding).reduce((a, b) => a + b, 0);
     const totalDisplayLines = lines.length + padTotal + sepCount;
     state.display.style.minHeight = (totalDisplayLines * lineHeight) + 'px';
+
+    // Update stacks after render
+    updateStacks(state);
   }
 
   /**
    * Extract character ranges from tokenDiffs for a given side.
-   * Returns sorted, non-overlapping [{start, end}] arrays.
    */
   function extractDiffRanges(tokenDiffs, side) {
     if (!tokenDiffs || !tokenDiffs.length) return [];
@@ -222,9 +314,7 @@ const Editor = (() => {
         }
       }
     }
-    // Sort by start position
     ranges.sort((a, b) => a.start - b.start);
-    // Merge overlapping
     const merged = [];
     for (const r of ranges) {
       if (merged.length > 0 && r.start <= merged[merged.length - 1].end) {
@@ -239,12 +329,10 @@ const Editor = (() => {
   function syntaxHighlightLine(line, tokenDiffs, side) {
     if (!line) return '';
 
-    // Insert PUA markers at diff token boundaries (before HTML escaping)
     let s = line;
     if (tokenDiffs && side) {
       const ranges = extractDiffRanges(tokenDiffs, side);
       if (ranges.length > 0) {
-        // Insert markers from end to start so positions stay valid
         for (let r = ranges.length - 1; r >= 0; r--) {
           const { start, end } = ranges[r];
           const safeEnd = Math.min(end, s.length);
@@ -255,41 +343,23 @@ const Editor = (() => {
       }
     }
 
-    // Escape HTML
     s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-    // Apply syntax tokens (order matters — later rules can color inside earlier spans)
-    // Comments first
     s = s.replace(/(\([^)]*\))/g, '<span class="gcode-comment-paren">$1</span>');
     s = s.replace(/(;.*)$/, '<span class="gcode-comment-semi">$1</span>');
-    // Line numbers (N)
     s = s.replace(/\b(N\d+)\b/gi, '<span class="gcode-line-number">$1</span>');
-    // Macro variables
     s = s.replace(/(#\d+)/g, '<span class="gcode-macro">$1</span>');
-    // G codes
     s = s.replace(/\b(G\d+\.?\d*)\b/gi, '<span class="gcode-g">$1</span>');
-    // M codes
     s = s.replace(/\b(M\d+\.?\d*)\b/gi, '<span class="gcode-m">$1</span>');
-    // Tool
     s = s.replace(/\b(T\d+)\b/gi, '<span class="gcode-t">$1</span>');
-    // H/D offsets
     s = s.replace(/\b([HD]\d+)\b/gi, '<span class="gcode-hd">$1</span>');
-    // Feed
     s = s.replace(/\b(F-?\d+\.?\d*)\b/gi, '<span class="gcode-f">$1</span>');
-    // Spindle
     s = s.replace(/\b(S\d+\.?\d*)\b/gi, '<span class="gcode-s">$1</span>');
-    // X/Y axes (red)
     s = s.replace(/\b([XY]-?\d+\.?\d*)\b/gi, '<span class="gcode-xy">$1</span>');
-    // Z axis (green)
     s = s.replace(/\b(Z-?\d+\.?\d*)\b/gi, '<span class="gcode-z">$1</span>');
-    // Rotary ABC (green)
     s = s.replace(/\b([ABC]-?\d+\.?\d*)\b/gi, '<span class="gcode-abc">$1</span>');
-    // Arc IJK (yellow)
     s = s.replace(/\b([IJK]-?\d+\.?\d*)\b/gi, '<span class="gcode-ijk">$1</span>');
-    // Other params R, P, Q, L
     s = s.replace(/\b([RPQL]-?\d+\.?\d*)\b/gi, '<span class="gcode-param">$1</span>');
 
-    // Replace PUA markers with token-diff spans (after all syntax highlighting)
     s = s.replace(/\uE000/g, '<span class="token-diff">');
     s = s.replace(/\uE001/g, '</span>');
 
@@ -381,11 +451,6 @@ const Editor = (() => {
     render(state);
   }
 
-  /**
-   * Set diff decorations and alignment padding for a side.
-   * decorations: array of { line, type }
-   * padding: object { lineIndex: numPaddingLines } — blank lines inserted before lineIndex
-   */
   function setDecorations(side, decorations, padding, disabledLines, separators) {
     const state = side === 'left' ? leftState : rightState;
     if (!state) return;
@@ -411,7 +476,6 @@ const Editor = (() => {
     const state = side === 'left' ? leftState : rightState;
     if (!state) return;
     const lineHeight = 20;
-    // Account for padding lines and separator rows before this line
     let displayLine = lineNum;
     for (let i = 0; i <= lineNum; i++) {
       displayLine += (state.alignmentPadding[i] || 0);
