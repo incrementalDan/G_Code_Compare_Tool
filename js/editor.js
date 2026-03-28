@@ -45,9 +45,12 @@ const Editor = (() => {
       textarea,
       display,
       content: '',
-      decorations: {},  // lineIndex -> type
+      decorations: {},  // lineIndex -> {type, tokenDiffs}
       filename: 'untitled',
-      alignmentPadding: {} // lineIndex -> number of padding lines to insert BEFORE this line
+      alignmentPadding: {}, // lineIndex -> number of padding lines to insert BEFORE this line
+      toolpathSeparators: {}, // lineIndex -> {id, label, disabled}
+      onSeparatorClick: null,
+      onSeparatorToggle: null
     };
 
     // Focus textarea on click anywhere in the editor
@@ -140,11 +143,30 @@ const Editor = (() => {
   /**
    * Render the display area with line numbers, syntax highlighting, and diff colors.
    */
+  function escapeHtml(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   function render(state) {
     const lines = state.content.split('\n');
     let html = '';
+    let sepCount = 0;
 
     for (let i = 0; i < lines.length; i++) {
+      // Insert toolpath separator before this line (before padding)
+      const sep = state.toolpathSeparators[i];
+      if (sep) {
+        sepCount++;
+        const checkedAttr = sep.disabled ? '' : ' checked';
+        const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+        html += `<div class="editor-line tp-separator${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+          `<span class="line-num"></span>` +
+          `<span class="line-content tp-sep-content">` +
+          `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
+          `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
+          `</span></div>`;
+      }
+
       // Insert alignment padding lines before this line
       const padding = state.alignmentPadding[i] || 0;
       for (let p = 0; p < padding; p++) {
@@ -163,9 +185,23 @@ const Editor = (() => {
 
     state.display.innerHTML = html;
 
+    // Bind separator events
+    state.display.querySelectorAll('.tp-separator').forEach(el => {
+      const cb = el.querySelector('.tp-sep-cb');
+      const tpId = el.dataset.tpId;
+      el.addEventListener('click', (e) => {
+        if (e.target === cb) return;
+        if (state.onSeparatorClick) state.onSeparatorClick(tpId);
+      });
+      cb.addEventListener('change', () => {
+        if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
+      });
+    });
+
     // Ensure the display is tall enough
     const lineHeight = 20;
-    const totalDisplayLines = lines.length + Object.values(state.alignmentPadding).reduce((a, b) => a + b, 0);
+    const padTotal = Object.values(state.alignmentPadding).reduce((a, b) => a + b, 0);
+    const totalDisplayLines = lines.length + padTotal + sepCount;
     state.display.style.minHeight = (totalDisplayLines * lineHeight) + 'px';
   }
 
@@ -350,7 +386,7 @@ const Editor = (() => {
    * decorations: array of { line, type }
    * padding: object { lineIndex: numPaddingLines } — blank lines inserted before lineIndex
    */
-  function setDecorations(side, decorations, padding, disabledLines) {
+  function setDecorations(side, decorations, padding, disabledLines, separators) {
     const state = side === 'left' ? leftState : rightState;
     if (!state) return;
 
@@ -360,17 +396,26 @@ const Editor = (() => {
     }
     state.alignmentPadding = padding || {};
     state.disabledLines = disabledLines || new Set();
+    state.toolpathSeparators = separators || {};
     render(state);
+  }
+
+  function setSeparatorCallbacks(side, callbacks) {
+    const state = side === 'left' ? leftState : rightState;
+    if (!state) return;
+    state.onSeparatorClick = callbacks.onClick || null;
+    state.onSeparatorToggle = callbacks.onToggle || null;
   }
 
   function scrollToLine(side, lineNum) {
     const state = side === 'left' ? leftState : rightState;
     if (!state) return;
     const lineHeight = 20;
-    // Account for padding lines before this line
+    // Account for padding lines and separator rows before this line
     let displayLine = lineNum;
     for (let i = 0; i <= lineNum; i++) {
       displayLine += (state.alignmentPadding[i] || 0);
+      if (state.toolpathSeparators[i]) displayLine++;
     }
     const targetScroll = displayLine * lineHeight - state.wrapper.clientHeight / 2;
     state.wrapper.scrollTop = Math.max(0, targetScroll);
@@ -384,6 +429,6 @@ const Editor = (() => {
   return {
     init, getValue, setValue, setFilename, getFilename,
     setDecorations, scrollToLine, setSyncScroll,
-    getLineCount, loadFileInto
+    setSeparatorCallbacks, getLineCount, loadFileInto
   };
 })();
