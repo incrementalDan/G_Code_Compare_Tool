@@ -78,9 +78,10 @@ const Editor = (() => {
       let actualLine = 0;
       let displayLine = 0;
       for (let i = 0; i < lines.length; i++) {
-        if (state.toolpathSeparators[i]) displayLine++;
+        // Order must match render(): padding first, then separator, then content
         const padding = state.alignmentPadding[i] || 0;
         displayLine += padding;
+        if (state.toolpathSeparators[i]) displayLine++;
         if (displayLine === clickedLine || (displayLine <= clickedLine && clickedLine < displayLine + 1)) {
           actualLine = i;
           break;
@@ -107,7 +108,7 @@ const Editor = (() => {
     wrapper.addEventListener('scroll', () => {
       textarea.scrollTop = wrapper.scrollTop;
       textarea.scrollLeft = wrapper.scrollLeft;
-      updateStacks(state);
+      scheduleUpdateStacks(state);
     });
 
     // Input handling
@@ -154,6 +155,15 @@ const Editor = (() => {
   // =====================================================
   // Toolpath Stack Overlays
   // =====================================================
+
+  let stackRafId = null;
+  function scheduleUpdateStacks(state) {
+    if (stackRafId) return; // already scheduled
+    stackRafId = requestAnimationFrame(() => {
+      stackRafId = null;
+      updateStacks(state);
+    });
+  }
 
   function updateStacks(state) {
     if (!state.separatorPositions.length) {
@@ -229,7 +239,13 @@ const Editor = (() => {
     let sepCount = 0;
 
     for (let i = 0; i < lines.length; i++) {
-      // Insert toolpath separator before this line
+      // Insert alignment padding lines FIRST (keeps both panes aligned)
+      const padding = state.alignmentPadding[i] || 0;
+      for (let p = 0; p < padding; p++) {
+        html += `<div class="editor-line padding-line"><span class="line-num"></span><span class="line-content">&nbsp;</span></div>`;
+      }
+
+      // Insert toolpath separator AFTER padding (so it appears at the aligned position)
       const sep = state.toolpathSeparators[i];
       if (sep) {
         sepCount++;
@@ -241,12 +257,6 @@ const Editor = (() => {
           `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
           `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
           `</span></div>`;
-      }
-
-      // Insert alignment padding lines before this line
-      const padding = state.alignmentPadding[i] || 0;
-      for (let p = 0; p < padding; p++) {
-        html += `<div class="editor-line padding-line"><span class="line-num"></span><span class="line-content">&nbsp;</span></div>`;
       }
 
       const isDisabled = state.disabledLines && state.disabledLines.has(i);

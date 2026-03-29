@@ -25,6 +25,7 @@ const App = (() => {
   let diffPositions = []; // indices into currentDiff that are actual diffs
   let currentDiffIndex = -1;
   let currentToolpaths = { left: [], right: [] };
+  let currentTpMatches = []; // toolpath match pairs from diff engine
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
 
   // === Example data ===
@@ -323,6 +324,7 @@ N120 M30`;
     });
     currentDiff = diffResult.ops;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
+    currentTpMatches = diffResult.tpMatches || [];
 
     // Reset disabled toolpaths
     disabledToolpathIds.clear();
@@ -457,6 +459,24 @@ N120 M30`;
       };
     }
 
+    // Compensate for unmatched toolpath separators to keep scroll sync aligned.
+    // Each unmatched toolpath adds a separator row on one side only — add 1 padding
+    // line to the opposite side at the point where the separator appears.
+    for (const match of currentTpMatches) {
+      if (match.left && !match.right) {
+        // Left has separator, right doesn't — add padding to right at corresponding position
+        // The right side content near this point gets the compensation
+        const nextMatch = currentTpMatches.find(m => m.right && m.right.startLine > (match.left.startLine));
+        const rightLine = nextMatch ? nextMatch.right.startLine : rightLineCount;
+        rightPadding[rightLine] = (rightPadding[rightLine] || 0) + 1;
+      } else if (!match.left && match.right) {
+        // Right has separator, left doesn't — add padding to left
+        const nextMatch = currentTpMatches.find(m => m.left && m.left.startLine > (match.right.startLine));
+        const leftLine = nextMatch ? nextMatch.left.startLine : leftLineCount;
+        leftPadding[leftLine] = (leftPadding[leftLine] || 0) + 1;
+      }
+    }
+
     Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
     Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
 
@@ -558,6 +578,7 @@ N120 M30`;
     diffPositions = [];
     currentDiffIndex = -1;
     currentToolpaths = { left: [], right: [] };
+    currentTpMatches = [];
     disabledToolpathIds.clear();
     clearDecorations();
     updateStatusBar({ critical: 0, minor: 0, noise: 0, added: 0, removed: 0 }, 0, 0);
