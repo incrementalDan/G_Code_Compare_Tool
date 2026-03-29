@@ -27,7 +27,6 @@
   <div id="color-legend">
     <span class="legend-item"><span class="legend-swatch legend-critical"></span>Critical</span>
     <span class="legend-item"><span class="legend-swatch legend-minor"></span>Minor</span>
-    <span class="legend-item"><span class="legend-swatch legend-noise"></span>Noise</span>
     <span class="legend-item"><span class="legend-swatch legend-added"></span>Added</span>
     <span class="legend-item"><span class="legend-swatch legend-removed"></span>Removed</span>
   </div>
@@ -97,29 +96,8 @@
     </div>
 
     <div class="settings-section">
-      <h3>Adaptive Toolpath Noise</h3>
-      <p class="setting-description">Sections with many coordinate-only changes (from adaptive/HEM toolpaths) are treated as noise. Coordinate differences in non-noise sections use the tolerance thresholds below.</p>
-      <div class="setting-row">
-        <label for="opt-suppress-noise">Suppress coordinate noise</label>
-        <input type="checkbox" id="opt-suppress-noise" checked>
-      </div>
-      <div class="setting-row">
-        <label>Noise threshold (lines)</label>
-        <div class="stepper">
-          <button class="stepper-btn" data-target="noise" data-dir="-1">-</button>
-          <span class="stepper-value" id="noise-threshold-value">10</span>
-          <button class="stepper-btn" data-target="noise" data-dir="1">+</button>
-        </div>
-      </div>
-      <div class="setting-row">
-        <label for="opt-hide-noise">Hide noise lines entirely</label>
-        <input type="checkbox" id="opt-hide-noise">
-      </div>
-    </div>
-
-    <div class="settings-section">
       <h3>Coordinate Tolerances</h3>
-      <p class="setting-description">In non-noise sections, coordinate changes within the minor threshold are hidden. Changes between minor and major are shown as amber (minor). Changes beyond major are shown as red (critical).</p>
+      <p class="setting-description">Coordinate changes within the minor threshold are hidden. Changes between minor and major are shown as amber (minor). Changes beyond major are shown as red (critical).</p>
       <div class="setting-row">
         <label>Minor threshold</label>
         <div class="stepper">
@@ -153,7 +131,6 @@
       <span>Toolpaths: <span id="stat-toolpaths-left">0</span> / <span id="stat-toolpaths-right">0</span></span>
       <span>Critical: <span class="status-major" id="stat-major">0</span></span>
       <span>Minor: <span class="status-minor-count" id="stat-minor-count">0</span></span>
-      <span>Noise: <span class="status-noise" id="stat-noise">0</span></span>
       <span>Lines: <span id="stat-lines-left">0</span> / <span id="stat-lines-right">0</span></span>
     </div>
     <div id="status-center"></div>
