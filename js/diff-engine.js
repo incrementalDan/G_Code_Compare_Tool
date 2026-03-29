@@ -1,6 +1,6 @@
 /**
  * G-Code Semantic Diff Engine
- * Token-aware parsing, whole-file LCS, modal state fingerprints, and noise detection.
+ * Token-aware parsing, segmented LCS, modal state fingerprints, and tolerance classification.
  */
 
 const DiffEngine = (() => {
@@ -768,97 +768,11 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
-  // Adaptive Noise Detection (with tolerance for non-noise sections)
+  // Tolerance Classification
   // =====================================================
 
   /**
-   * Post-process diff ops with section-aware noise detection.
-   * Noisy sections: coordinate diffs → 'noise' (rare Z stays critical)
-   * Non-noisy sections: coordinate diffs classified by tolerance thresholds
-   */
-  /**
-   * Returns true if the only 'critical' tokenDiffs are G-code changes between
-   * motion codes (G0/G1/G2/G3). These interchange freely in adaptive toolpaths
-   * and should be treated as noise in noisy sections.
-   */
-  function isMotionCodeOnlyChange(tokenDiffs) {
-    if (!tokenDiffs) return false;
-    for (const td of tokenDiffs) {
-      if (td.severity !== 'critical') continue;
-      if (td.field !== 'gCode') return false;
-      const allMotion = (vals) => {
-        if (!vals) return true;
-        return vals.split(',').every(g => {
-          const num = parseFloat(g.replace(/^G/i, ''));
-          return num >= 0 && num <= 3;
-        });
-      };
-      if (!allMotion(td.leftVal) || !allMotion(td.rightVal)) return false;
-    }
-    return true;
-  }
-
-  function detectAdaptiveNoise(sectionOps, noiseThreshold, minorThreshold, majorThreshold) {
-    let coordOnlyCount = 0;
-    let modifiedCount = 0;
-    let zOnlyCount = 0;
-
-    for (const op of sectionOps) {
-      if (op.type === 'equal') continue;
-      if (op.type === 'added' || op.type === 'removed') {
-        if (op.coordOnly) { modifiedCount++; coordOnlyCount++; }
-        continue;
-      }
-      modifiedCount++;
-      if (op.tokenDiffs) {
-        const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
-        // Motion-code-only G-code changes (G0/G1/G2/G3) count as coordinate noise
-        const effectiveCritical = hasCritical && !isMotionCodeOnlyChange(op.tokenDiffs);
-        const hasCoord = op.tokenDiffs.some(d => d.severity === 'coordinate' || d.severity === 'coordinate-z');
-        const onlyCoord = !effectiveCritical && hasCoord;
-        const onlyZ = onlyCoord && op.tokenDiffs.every(d =>
-          d.severity === 'coordinate-z' || d.severity === 'coordinate' ||
-          d.severity === 'equal' || (d.severity === 'critical' && d.field === 'gCode' && isMotionCodeOnlyChange([d])));
-        if (onlyCoord) coordOnlyCount++;
-        if (onlyZ) zOnlyCount++;
-      }
-    }
-
-    const isNoisy = coordOnlyCount >= noiseThreshold ||
-                    (modifiedCount > 5 && coordOnlyCount / modifiedCount > 0.6);
-
-    if (isNoisy) {
-      const preserveZ = zOnlyCount <= 5;
-
-      for (const op of sectionOps) {
-        if (op.type === 'added' && op.coordOnly) { op.type = 'noise-added'; continue; }
-        if (op.type === 'removed' && op.coordOnly) { op.type = 'noise-removed'; continue; }
-
-        if (!op.tokenDiffs) continue;
-        const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
-        // Let truly critical ops through; motion-code-only changes become noise
-        if (hasCritical && !isMotionCodeOnlyChange(op.tokenDiffs)) continue;
-
-        const hasCoord = op.tokenDiffs.some(d => d.severity === 'coordinate' || d.severity === 'coordinate-z');
-        const onlyZ = op.tokenDiffs.every(d =>
-          d.severity === 'coordinate-z' || d.severity === 'equal' ||
-          (d.severity === 'critical' && d.field === 'gCode' && isMotionCodeOnlyChange([d])));
-
-        if (hasCoord || isMotionCodeOnlyChange(op.tokenDiffs)) {
-          if (onlyZ && preserveZ) {
-            op.type = 'critical';
-          } else {
-            op.type = 'noise';
-          }
-        }
-      }
-    } else {
-      applyToleranceClassification(sectionOps, minorThreshold, majorThreshold);
-    }
-  }
-
-  /**
-   * For non-noise sections, classify coordinate diffs using tolerance thresholds.
+   * Classify coordinate diffs using tolerance thresholds.
    * - All deltas within minorThreshold → 'equal' (invisible)
    * - Any delta within majorThreshold → 'minor' (amber)
    * - Any delta beyond majorThreshold → 'critical' (red)
@@ -886,7 +800,8 @@ const DiffEngine = (() => {
       }
 
       if (!allHaveDelta) {
-        // Missing axis on one side — keep as-is (critical by default)
+        // Missing axis on one side — flag as critical
+        op.type = 'critical';
         continue;
       }
 
@@ -975,8 +890,6 @@ const DiffEngine = (() => {
 
   function computeSemanticDiff(leftLines, rightLines, opts) {
     const rules = opts.rules || {};
-    const noiseThreshold = opts.noiseThreshold || 10;
-    const suppressNoise = opts.suppressNoise !== false;
     const minorThreshold = opts.minorThreshold || 0.001;
     const majorThreshold = opts.majorThreshold || 0.01;
 
@@ -1033,42 +946,21 @@ const DiffEngine = (() => {
         // Entire toolpath removed
         for (let i = match.left.startLine; i <= match.left.endLine; i++) {
           if (leftParsed[i].isBlank) continue;
-          allOps.push({ type: 'removed', leftIdx: i, leftLine: leftLines[i],
-                         coordOnly: isCoordOnlyLine(leftParsed[i]) });
+          allOps.push({ type: 'removed', leftIdx: i, leftLine: leftLines[i] });
         }
       } else {
         // Entire toolpath added
         for (let i = match.right.startLine; i <= match.right.endLine; i++) {
           if (rightParsed[i].isBlank) continue;
-          allOps.push({ type: 'added', rightIdx: i, rightLine: rightLines[i],
-                         coordOnly: isCoordOnlyLine(rightParsed[i]) });
+          allOps.push({ type: 'added', rightIdx: i, rightLine: rightLines[i] });
         }
       }
     }
 
-    // Post-process: apply noise detection per toolpath
-    if (suppressNoise) {
-      applyNoiseDetection(allOps, leftLines, leftParsed, rightLines, rightParsed,
-        noiseThreshold, minorThreshold, majorThreshold, leftToolpaths, rightToolpaths);
-    }
+    // Post-process: apply tolerance classification to all coordinate diffs
+    applyToleranceClassification(allOps, minorThreshold, majorThreshold);
 
     return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches };
-  }
-
-  /**
-   * Convert raw LCS ops into classified diff ops with token diffs.
-   * Groups consecutive removes/adds and pairs them for comparison.
-   */
-  /**
-   * Returns true if a parsed line contains only axis/arc values (no G/M/T/F/S codes).
-   * These are bare coordinate lines generated by adaptive/HEM toolpaths.
-   */
-  function isCoordOnlyLine(parsed) {
-    if (!parsed || parsed.isBlank || parsed.isCommentOnly) return false;
-    if (parsed.gCodes.length > 0 || parsed.mCodes.length > 0) return false;
-    if (parsed.tool !== null || parsed.feed !== null || parsed.spindle !== null) return false;
-    const hasAxes = Object.keys(parsed.axes).length > 0 || Object.keys(parsed.arcParams).length > 0;
-    return hasAxes;
   }
 
   function classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap) {
@@ -1121,54 +1013,15 @@ const DiffEngine = (() => {
 
       for (let p = pairCount; p < removes.length; p++) {
         const li = leftIdxMap[removes[p].leftIdx];
-        result.push({ type: 'removed', leftIdx: li, leftLine: leftLines[li],
-          coordOnly: isCoordOnlyLine(leftParsed[li]) });
+        result.push({ type: 'removed', leftIdx: li, leftLine: leftLines[li] });
       }
       for (let p = pairCount; p < adds.length; p++) {
         const ri = rightIdxMap[adds[p].rightIdx];
-        result.push({ type: 'added', rightIdx: ri, rightLine: rightLines[ri],
-          coordOnly: isCoordOnlyLine(rightParsed[ri]) });
+        result.push({ type: 'added', rightIdx: ri, rightLine: rightLines[ri] });
       }
     }
 
     return result;
-  }
-
-  /**
-   * Segment diff ops into sections based on left-side line indices,
-   * then apply noise detection per section.
-   */
-  function applyNoiseDetection(allOps, leftLines, leftParsed, rightLines, rightParsed,
-    noiseThreshold, minorThreshold, majorThreshold, leftToolpaths, rightToolpaths) {
-
-    // Use toolpath boundaries for grouping
-    const leftSections = leftToolpaths || segmentIntoToolpaths(leftLines, leftParsed);
-    const rightSections = rightToolpaths || segmentIntoToolpaths(rightLines, rightParsed);
-
-    function getSectionIdx(lineIdx, sections) {
-      for (let s = sections.length - 1; s >= 0; s--) {
-        if (lineIdx >= sections[s].startLine) return s;
-      }
-      return 0;
-    }
-
-    // Group ops by their toolpath section
-    const sectionOpsMap = {};
-    for (const op of allOps) {
-      let sIdx;
-      if (op.leftIdx !== undefined) {
-        sIdx = 'L' + getSectionIdx(op.leftIdx, leftSections);
-      } else {
-        sIdx = 'R' + getSectionIdx(op.rightIdx, rightSections);
-      }
-      if (!sectionOpsMap[sIdx]) sectionOpsMap[sIdx] = [];
-      sectionOpsMap[sIdx].push(op);
-    }
-
-    // Apply noise detection to each toolpath group
-    for (const ops of Object.values(sectionOpsMap)) {
-      detectAdaptiveNoise(ops, noiseThreshold, minorThreshold, majorThreshold);
-    }
   }
 
   // =====================================================
@@ -1176,15 +1029,14 @@ const DiffEngine = (() => {
   // =====================================================
 
   function countStats(diffResult) {
-    let critical = 0, noise = 0, added = 0, removed = 0, minor = 0;
+    let critical = 0, added = 0, removed = 0, minor = 0;
     for (const op of diffResult) {
-      if (op.type === 'critical' || op.type === 'coordinate-z') critical++;
-      else if (op.type === 'noise' || op.type === 'coordinate' || op.type === 'noise-added' || op.type === 'noise-removed') noise++;
+      if (op.type === 'critical') critical++;
       else if (op.type === 'minor') minor++;
       else if (op.type === 'added') added++;
       else if (op.type === 'removed') removed++;
     }
-    return { critical, noise, minor, added, removed };
+    return { critical, minor, added, removed };
   }
 
   // =====================================================
