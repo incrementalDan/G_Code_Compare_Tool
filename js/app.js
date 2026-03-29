@@ -272,6 +272,12 @@ N120 M30`;
     return toolpaths[0] || null;
   }
 
+  /** True if op has structural critical diffs (feed, spindle, tool, offsets, non-motion G-codes, M-codes). */
+  function hasStructuralCritical(op) {
+    if (!op.tokenDiffs) return false;
+    return op.tokenDiffs.some(d => d.severity === 'critical');
+  }
+
   function isOpDisabled(op) {
     if (disabledToolpathIds.size === 0) return false;
     if (op.leftIdx !== undefined) {
@@ -341,9 +347,9 @@ N120 M30`;
       }
     }
 
-    // Un-disable lines that have critical diffs — they must show through
+    // Un-disable lines that have structural critical diffs — they must show through
     for (const op of currentDiff) {
-      if (op.type !== 'critical') continue;
+      if (!hasStructuralCritical(op)) continue;
       if (op.leftIdx !== undefined) leftDisabled.delete(op.leftIdx);
       if (op.rightIdx !== undefined) rightDisabled.delete(op.rightIdx);
     }
@@ -360,9 +366,9 @@ N120 M30`;
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
 
-      // Skip ops in disabled toolpath sections, but let critical diffs through
+      // Skip ops in disabled toolpath sections, but let structural critical diffs through
       const disabled = isOpDisabled(op);
-      if (disabled && op.type !== 'critical') continue;
+      if (disabled && !hasStructuralCritical(op)) continue;
 
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
 
@@ -472,9 +478,9 @@ N120 M30`;
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
       if (op.type === 'equal') continue;
-      // Filter disabled toolpath ops from gutter, but let critical diffs through
+      // Filter disabled toolpath ops from gutter, but let structural critical diffs through
       const disabled = isOpDisabled(op);
-      if (disabled && op.type !== 'critical') continue;
+      if (disabled && !hasStructuralCritical(op)) continue;
 
       const dt = decoType(op.type);
       const top = Math.round((i / total) * height);
