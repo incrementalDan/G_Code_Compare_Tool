@@ -653,7 +653,16 @@ const DiffEngine = (() => {
     const gA = normalizeCodeSet(parsedA.gCodes);
     const gB = normalizeCodeSet(parsedB.gCodes);
     if (gA !== gB) {
-      tokenDiffs.push({ field: 'gCode', severity: 'critical', leftVal: gA, rightVal: gB,
+      // Motion code interchange (G0/G1/G2/G3) is normal CAM behavior, not structural
+      const isMotionOnly = (codes) => {
+        if (!codes) return true;
+        return codes.split(',').every(g => {
+          const num = parseFloat(g.replace(/^G/i, ''));
+          return num >= 0 && num <= 3;
+        });
+      };
+      const severity = (isMotionOnly(gA) && isMotionOnly(gB)) ? 'minor' : 'critical';
+      tokenDiffs.push({ field: 'gCode', severity, leftVal: gA, rightVal: gB,
         leftTokens: parsedA.tokens.filter(t => t.type === 'gCode'),
         rightTokens: parsedB.tokens.filter(t => t.type === 'gCode') });
     }
