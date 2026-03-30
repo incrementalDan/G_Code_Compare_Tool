@@ -279,18 +279,20 @@ const Editor = (() => {
 
     state.display.innerHTML = html;
 
-    // Bind inline separator events
-    state.display.querySelectorAll('.tp-separator').forEach(el => {
+    // Bind inline separator events (skip placeholders — they have no checkbox)
+    state.display.querySelectorAll('.tp-separator:not(.tp-placeholder)').forEach(el => {
       const cb = el.querySelector('.tp-sep-cb');
       const tpId = el.dataset.tpId;
       el.addEventListener('click', (e) => {
         if (e.target === cb) return;
         if (state.onSeparatorClick) state.onSeparatorClick(tpId);
       });
-      cb.addEventListener('change', (e) => {
-        e.stopPropagation();
-        if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
-      });
+      if (cb) {
+        cb.addEventListener('change', (e) => {
+          e.stopPropagation();
+          if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
+        });
+      }
     });
 
     // Cache separator positions for stack overlay updates

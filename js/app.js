@@ -483,14 +483,20 @@ N120 M30`;
     Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
     Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
 
-    // Equalize display heights so scrollTop-based sync stays aligned
-    const leftDisplay = document.querySelector('#left-editor .editor-display');
-    const rightDisplay = document.querySelector('#right-editor .editor-display');
-    if (leftDisplay && rightDisplay) {
-      const maxH = Math.max(leftDisplay.scrollHeight, rightDisplay.scrollHeight);
-      leftDisplay.style.minHeight = maxH + 'px';
-      rightDisplay.style.minHeight = maxH + 'px';
-    }
+    // Equalize display heights so scrollTop-based sync stays aligned.
+    // Use rAF to measure after the DOM has reflowed from setDecorations/render.
+    requestAnimationFrame(() => {
+      const leftDisplay = document.querySelector('#left-editor .editor-display');
+      const rightDisplay = document.querySelector('#right-editor .editor-display');
+      if (leftDisplay && rightDisplay) {
+        // Reset to natural height first, then equalize
+        leftDisplay.style.minHeight = '';
+        rightDisplay.style.minHeight = '';
+        const maxH = Math.max(leftDisplay.scrollHeight, rightDisplay.scrollHeight);
+        leftDisplay.style.minHeight = maxH + 'px';
+        rightDisplay.style.minHeight = maxH + 'px';
+      }
+    });
 
     // Update diff markers in center gutter
     updateDiffMarkers();
