@@ -278,6 +278,14 @@ N120 M30`;
     return op.tokenDiffs.some(d => d.severity === 'critical');
   }
 
+  function findCorrespondingLine(unmatchedEntry, targetSide, matches, lineCount) {
+    const unmatchedIdx = matches.indexOf(unmatchedEntry);
+    for (let i = unmatchedIdx + 1; i < matches.length; i++) {
+      if (matches[i][targetSide]) return matches[i][targetSide].startLine;
+    }
+    return lineCount;
+  }
+
   function isOpDisabled(op) {
     if (disabledToolpathIds.size === 0) return false;
     if (op.leftIdx !== undefined) {
@@ -370,6 +378,22 @@ N120 M30`;
       const disabled = isOpDisabled(op);
       if (disabled && !hasStructuralCritical(op)) continue;
 
+      // Flush pending padding at toolpath boundaries so separators stay aligned
+      if (op.leftIdx !== undefined) {
+        const leftTp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
+        if (leftTp && leftTp.startLine === op.leftIdx && leftPendingPad > 0) {
+          leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
+          leftPendingPad = 0;
+        }
+      }
+      if (op.rightIdx !== undefined) {
+        const rightTp = getToolpathForLine(op.rightIdx, currentToolpaths.right);
+        if (rightTp && rightTp.startLine === op.rightIdx && rightPendingPad > 0) {
+          rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
+          rightPendingPad = 0;
+        }
+      }
+
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
 
       if (op.type === 'equal' || hasBothSides) {
@@ -428,26 +452,45 @@ N120 M30`;
       };
     }
 
-    // Compensate for unmatched toolpath separators to keep scroll sync aligned.
-    // Each unmatched toolpath adds a separator row on one side only — add 1 padding
-    // line to the opposite side at the point where the separator appears.
+    // Add placeholder separators for unmatched toolpaths on the opposite side.
+    // This keeps separator counts balanced so both panes have identical total heights.
     for (const match of currentTpMatches) {
       if (match.left && !match.right) {
-        // Left has separator, right doesn't — add padding to right at corresponding position
-        // The right side content near this point gets the compensation
-        const nextMatch = currentTpMatches.find(m => m.right && m.right.startLine > (match.left.startLine));
-        const rightLine = nextMatch ? nextMatch.right.startLine : rightLineCount;
-        rightPadding[rightLine] = (rightPadding[rightLine] || 0) + 1;
+        // Left has a toolpath, right doesn't — add placeholder separator to right
+        const rightLine = findCorrespondingLine(match, 'right', currentTpMatches, rightLineCount);
+        if (!rightSeparators[rightLine]) {
+          rightSeparators[rightLine] = {
+            id: 'PL' + match.left.id,
+            label: buildTpLabel(match.left) + ' (not in CAM file)',
+            disabled: false,
+            placeholder: true
+          };
+        }
       } else if (!match.left && match.right) {
-        // Right has separator, left doesn't — add padding to left
-        const nextMatch = currentTpMatches.find(m => m.left && m.left.startLine > (match.right.startLine));
-        const leftLine = nextMatch ? nextMatch.left.startLine : leftLineCount;
-        leftPadding[leftLine] = (leftPadding[leftLine] || 0) + 1;
+        // Right has a toolpath, left doesn't — add placeholder separator to left
+        const leftLine = findCorrespondingLine(match, 'left', currentTpMatches, leftLineCount);
+        if (!leftSeparators[leftLine]) {
+          leftSeparators[leftLine] = {
+            id: 'PR' + match.right.id,
+            label: buildTpLabel(match.right) + ' (not in machine file)',
+            disabled: false,
+            placeholder: true
+          };
+        }
       }
     }
 
     Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
     Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
+
+    // Equalize display heights so scrollTop-based sync stays aligned
+    const leftDisplay = document.querySelector('#left-editor .editor-display');
+    const rightDisplay = document.querySelector('#right-editor .editor-display');
+    if (leftDisplay && rightDisplay) {
+      const maxH = Math.max(leftDisplay.scrollHeight, rightDisplay.scrollHeight);
+      leftDisplay.style.minHeight = maxH + 'px';
+      rightDisplay.style.minHeight = maxH + 'px';
+    }
 
     // Update diff markers in center gutter
     updateDiffMarkers();

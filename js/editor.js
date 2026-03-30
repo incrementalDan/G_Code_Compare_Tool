@@ -249,14 +249,22 @@ const Editor = (() => {
       const sep = state.toolpathSeparators[i];
       if (sep) {
         sepCount++;
-        const checkedAttr = sep.disabled ? '' : ' checked';
-        const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
-        html += `<div class="editor-line tp-separator${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
-          `<span class="line-num"></span>` +
-          `<span class="line-content tp-sep-content">` +
-          `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
-          `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
-          `</span></div>`;
+        if (sep.placeholder) {
+          html += `<div class="editor-line tp-separator tp-placeholder" data-tp-id="${escapeHtml(sep.id)}">` +
+            `<span class="line-num"></span>` +
+            `<span class="line-content tp-sep-content">` +
+            `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
+            `</span></div>`;
+        } else {
+          const checkedAttr = sep.disabled ? '' : ' checked';
+          const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+          html += `<div class="editor-line tp-separator${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+            `<span class="line-num"></span>` +
+            `<span class="line-content tp-sep-content">` +
+            `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
+            `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
+            `</span></div>`;
+        }
       }
 
       const isDisabled = state.disabledLines && state.disabledLines.has(i);
