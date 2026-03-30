@@ -373,12 +373,9 @@ N120 M30`;
 
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
-
-      // Skip ops in disabled toolpath sections, but let structural critical diffs through
       const disabled = isOpDisabled(op);
-      if (disabled && !hasStructuralCritical(op)) continue;
 
-      // Flush pending padding at toolpath boundaries so separators stay aligned
+      // Toolpath boundary flush — always, even for disabled ops
       if (op.leftIdx !== undefined) {
         const leftTp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
         if (leftTp && leftTp.startLine === op.leftIdx && leftPendingPad > 0) {
@@ -394,10 +391,28 @@ N120 M30`;
         }
       }
 
-      const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
+      // One-sided ops: always count padding (even if disabled), optionally skip decoration
+      if (op.type === 'added') {
+        leftPendingPad++;
+        if (disabled && !hasStructuralCritical(op)) continue;
+        rightDecos.push({ line: op.rightIdx, type: 'added' });
+        diffPositions.push(i);
+        continue;
+      }
+      if (op.type === 'removed') {
+        rightPendingPad++;
+        if (disabled && !hasStructuralCritical(op)) continue;
+        leftDecos.push({ line: op.leftIdx, type: 'removed' });
+        diffPositions.push(i);
+        continue;
+      }
 
+      // Both-sides ops: skip entirely if disabled
+      if (disabled && !hasStructuralCritical(op)) continue;
+
+      const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
       if (op.type === 'equal' || hasBothSides) {
-        // Both sides have a line — flush any pending padding
+        // Flush pending padding
         if (leftPendingPad > 0 && op.leftIdx !== undefined) {
           leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
           leftPendingPad = 0;
@@ -406,23 +421,12 @@ N120 M30`;
           rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
           rightPendingPad = 0;
         }
-
         if (op.type !== 'equal') {
           const dt = decoType(op.type);
           leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
           rightDecos.push({ line: op.rightIdx, type: dt, tokenDiffs: op.tokenDiffs });
           diffPositions.push(i);
         }
-
-      } else if (op.type === 'added') {
-        rightDecos.push({ line: op.rightIdx, type: 'added' });
-        diffPositions.push(i);
-        leftPendingPad++;
-
-      } else if (op.type === 'removed') {
-        leftDecos.push({ line: op.leftIdx, type: 'removed' });
-        diffPositions.push(i);
-        rightPendingPad++;
       }
     }
 
@@ -456,8 +460,8 @@ N120 M30`;
     // This keeps separator counts balanced so both panes have identical total heights.
     for (const match of currentTpMatches) {
       if (match.left && !match.right) {
-        // Left has a toolpath, right doesn't — add placeholder separator to right
-        const rightLine = findCorrespondingLine(match, 'right', currentTpMatches, rightLineCount);
+        let rightLine = findCorrespondingLine(match, 'right', currentTpMatches, rightLineCount);
+        while (rightLine > 0 && rightSeparators[rightLine]) rightLine--;
         if (!rightSeparators[rightLine]) {
           rightSeparators[rightLine] = {
             id: 'PL' + match.left.id,
@@ -467,8 +471,8 @@ N120 M30`;
           };
         }
       } else if (!match.left && match.right) {
-        // Right has a toolpath, left doesn't — add placeholder separator to left
-        const leftLine = findCorrespondingLine(match, 'left', currentTpMatches, leftLineCount);
+        let leftLine = findCorrespondingLine(match, 'left', currentTpMatches, leftLineCount);
+        while (leftLine > 0 && leftSeparators[leftLine]) leftLine--;
         if (!leftSeparators[leftLine]) {
           leftSeparators[leftLine] = {
             id: 'PR' + match.right.id,
@@ -480,23 +484,23 @@ N120 M30`;
       }
     }
 
+    // Final equalization: guarantee both panes have identical total display line counts.
+    // Formula must match render(): totalDisplayLines = lineCount + padTotal + sepCount
+    const leftPadTotal = Object.values(leftPadding).reduce((a, b) => a + b, 0);
+    const rightPadTotal = Object.values(rightPadding).reduce((a, b) => a + b, 0);
+    const leftSepCount = Object.keys(leftSeparators).length;
+    const rightSepCount = Object.keys(rightSeparators).length;
+    const leftTotal = leftLineCount + leftPadTotal + leftSepCount;
+    const rightTotal = rightLineCount + rightPadTotal + rightSepCount;
+
+    if (leftTotal < rightTotal) {
+      leftPadding[leftLineCount] = (leftPadding[leftLineCount] || 0) + (rightTotal - leftTotal);
+    } else if (rightTotal < leftTotal) {
+      rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + (leftTotal - rightTotal);
+    }
+
     Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
     Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
-
-    // Equalize display heights so scrollTop-based sync stays aligned.
-    // Use rAF to measure after the DOM has reflowed from setDecorations/render.
-    requestAnimationFrame(() => {
-      const leftDisplay = document.querySelector('#left-editor .editor-display');
-      const rightDisplay = document.querySelector('#right-editor .editor-display');
-      if (leftDisplay && rightDisplay) {
-        // Reset to natural height first, then equalize
-        leftDisplay.style.minHeight = '';
-        rightDisplay.style.minHeight = '';
-        const maxH = Math.max(leftDisplay.scrollHeight, rightDisplay.scrollHeight);
-        leftDisplay.style.minHeight = maxH + 'px';
-        rightDisplay.style.minHeight = maxH + 'px';
-      }
-    });
 
     // Update diff markers in center gutter
     updateDiffMarkers();
