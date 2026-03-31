@@ -157,11 +157,14 @@ const Editor = (() => {
   // =====================================================
 
   let stackRafId = null;
+  let pendingStackStates = new Set();
   function scheduleUpdateStacks(state) {
-    if (stackRafId) return; // already scheduled
+    pendingStackStates.add(state);
+    if (stackRafId) return;
     stackRafId = requestAnimationFrame(() => {
       stackRafId = null;
-      updateStacks(state);
+      for (const s of pendingStackStates) updateStacks(s);
+      pendingStackStates.clear();
     });
   }
 
@@ -201,12 +204,24 @@ const Editor = (() => {
     bindStackEvents(state.stackBottom, state);
   }
 
+  function buildLabelHtml(sep, isPlaceholder) {
+    const parts = sep.labelParts;
+    if (parts) {
+      const placeholderSuffix = isPlaceholder ? ' <span class="tp-not-in-file">(not in file)</span>' : '';
+      return `<span class="tp-n-num">${escapeHtml(parts.nNumber)}</span>` +
+        `<span class="tp-tool">${escapeHtml(parts.tool)}</span>` +
+        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}</span>`;
+    }
+    return `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>`;
+  }
+
   function buildStackItem(sep) {
     const checkedAttr = sep.disabled ? '' : ' checked';
     const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
-    return `<div class="tp-stack-item${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+    const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
+    return `<div class="tp-stack-item${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
       `<input type="checkbox" class="tp-sep-cb"${checkedAttr}>` +
-      `<span class="tp-stack-label">${escapeHtml(sep.label)}</span>` +
+      buildLabelHtml(sep, sep.placeholder) +
       `</div>`;
   }
 
@@ -249,22 +264,15 @@ const Editor = (() => {
       const sep = state.toolpathSeparators[i];
       if (sep) {
         sepCount++;
-        if (sep.placeholder) {
-          html += `<div class="editor-line tp-separator tp-placeholder" data-tp-id="${escapeHtml(sep.id)}">` +
-            `<span class="line-num"></span>` +
-            `<span class="line-content tp-sep-content">` +
-            `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
-            `</span></div>`;
-        } else {
-          const checkedAttr = sep.disabled ? '' : ' checked';
-          const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
-          html += `<div class="editor-line tp-separator${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
-            `<span class="line-num"></span>` +
-            `<span class="line-content tp-sep-content">` +
-            `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
-            `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>` +
-            `</span></div>`;
-        }
+        const checkedAttr = sep.disabled ? '' : ' checked';
+        const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+        const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
+        html += `<div class="editor-line tp-separator${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+          `<span class="line-num"></span>` +
+          `<span class="line-content tp-sep-content">` +
+          `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
+          buildLabelHtml(sep, sep.placeholder) +
+          `</span></div>`;
       }
 
       const isDisabled = state.disabledLines && state.disabledLines.has(i);
@@ -279,8 +287,8 @@ const Editor = (() => {
 
     state.display.innerHTML = html;
 
-    // Bind inline separator events (skip placeholders — they have no checkbox)
-    state.display.querySelectorAll('.tp-separator:not(.tp-placeholder)').forEach(el => {
+    // Bind inline separator events (all separators including placeholders)
+    state.display.querySelectorAll('.tp-separator').forEach(el => {
       const cb = el.querySelector('.tp-sep-cb');
       const tpId = el.dataset.tpId;
       el.addEventListener('click', (e) => {
@@ -303,6 +311,8 @@ const Editor = (() => {
       state.separatorPositions.push({
         id: tpId,
         label: sep ? sep.label : '',
+        labelParts: sep ? sep.labelParts : null,
+        placeholder: sep ? !!sep.placeholder : false,
         disabled: sep ? sep.disabled : false,
         offsetTop: el.offsetTop
       });

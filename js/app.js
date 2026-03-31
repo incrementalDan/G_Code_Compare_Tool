@@ -73,22 +73,21 @@ N120 M30`;
       applyDecorations();
     };
     const sepClick = (tpId) => {
-      // Find the toolpath and scroll to it
+      // Find the toolpath and scroll to it (use anchorLine for visible position)
+      const scrollLine = (tp) => (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
       const isRight = tpId.startsWith('R');
       if (isRight) {
         const rId = parseInt(tpId.slice(1));
         const rtp = currentToolpaths.right.find(t => t.id === rId);
-        if (rtp) Editor.scrollToLine('right', rtp.startLine);
-        // Also scroll left to matching toolpath by index
+        if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
         const ltp = currentToolpaths.left[rId];
-        if (ltp) Editor.scrollToLine('left', ltp.startLine);
+        if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
       } else {
         const lId = parseInt(tpId);
         const ltp = currentToolpaths.left.find(t => t.id === lId);
-        if (ltp) Editor.scrollToLine('left', ltp.startLine);
-        // Also scroll right to matching toolpath by index
+        if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
         const rtp = currentToolpaths.right[lId];
-        if (rtp) Editor.scrollToLine('right', rtp.startLine);
+        if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
       }
     };
     Editor.setSeparatorCallbacks('left', { onClick: sepClick, onToggle: sepToggle });
@@ -251,16 +250,24 @@ N120 M30`;
   }
 
   // === Toolpath helpers ===
+  function buildTpLabelParts(tp) {
+    if (tp.type === 'preamble') return { nNumber: '', tool: '', desc: 'Program Header' };
+    if (tp.type === 'program_end') return { nNumber: '', tool: '', desc: 'Program End' };
+    const nNumber = tp.nNumber || '';
+    const tool = tp.toolNumber !== null ? 'T' + tp.toolNumber : '';
+    const descParts = [];
+    if (tp.name) descParts.push(tp.name);
+    if (tp.opType) descParts.push(tp.opType);
+    const desc = descParts.join(' | ') || 'Section ' + tp.id;
+    return { nNumber, tool, desc };
+  }
+
   function buildTpLabel(tp) {
-    if (tp.type === 'preamble') return 'Program Header';
-    if (tp.type === 'program_end') return 'Program End';
+    const p = buildTpLabelParts(tp);
     const parts = [];
-    if (tp.nNumber) parts.push(tp.nNumber);
-    if (tp.toolNumber !== null) parts.push('T' + tp.toolNumber);
-    const desc = [];
-    if (tp.name) desc.push(tp.name);
-    if (tp.opType) desc.push(tp.opType);
-    if (desc.length > 0) parts.push(desc.join(' | '));
+    if (p.nNumber) parts.push(p.nNumber);
+    if (p.tool) parts.push(p.tool);
+    if (p.desc) parts.push(p.desc);
     return parts.join(' - ') || 'Section ' + tp.id;
   }
 
@@ -439,34 +446,40 @@ N120 M30`;
     }
 
     // Build toolpath separator data for inline display
+    // Use anchorLine (comment/G100 line) not startLine (expanded preamble)
     const leftSeparators = {};
     for (const tp of currentToolpaths.left) {
-      leftSeparators[tp.startLine] = {
+      const sepLine = (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
+      leftSeparators[sepLine] = {
         id: String(tp.id),
         label: buildTpLabel(tp),
+        labelParts: buildTpLabelParts(tp),
         disabled: disabledToolpathIds.has(String(tp.id))
       };
     }
     const rightSeparators = {};
     for (const tp of currentToolpaths.right) {
-      rightSeparators[tp.startLine] = {
+      const sepLine = (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
+      rightSeparators[sepLine] = {
         id: 'R' + tp.id,
         label: buildTpLabel(tp),
+        labelParts: buildTpLabelParts(tp),
         disabled: disabledToolpathIds.has('R' + tp.id)
       };
     }
 
     // Add placeholder separators for unmatched toolpaths on the opposite side.
-    // This keeps separator counts balanced so both panes have identical total heights.
+    // IDs match the real toolpath convention so isOpDisabled() works without changes.
     for (const match of currentTpMatches) {
       if (match.left && !match.right) {
         let rightLine = findCorrespondingLine(match, 'right', currentTpMatches, rightLineCount);
         while (rightLine > 0 && rightSeparators[rightLine]) rightLine--;
         if (!rightSeparators[rightLine]) {
           rightSeparators[rightLine] = {
-            id: 'PL' + match.left.id,
-            label: buildTpLabel(match.left) + ' (not in CAM file)',
-            disabled: false,
+            id: String(match.left.id),
+            label: buildTpLabel(match.left) + ' (not in file)',
+            labelParts: buildTpLabelParts(match.left),
+            disabled: disabledToolpathIds.has(String(match.left.id)),
             placeholder: true
           };
         }
@@ -475,9 +488,10 @@ N120 M30`;
         while (leftLine > 0 && leftSeparators[leftLine]) leftLine--;
         if (!leftSeparators[leftLine]) {
           leftSeparators[leftLine] = {
-            id: 'PR' + match.right.id,
-            label: buildTpLabel(match.right) + ' (not in machine file)',
-            disabled: false,
+            id: 'R' + match.right.id,
+            label: buildTpLabel(match.right) + ' (not in file)',
+            labelParts: buildTpLabelParts(match.right),
+            disabled: disabledToolpathIds.has('R' + match.right.id),
             placeholder: true
           };
         }
