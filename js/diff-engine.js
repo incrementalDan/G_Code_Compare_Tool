@@ -913,14 +913,9 @@ const DiffEngine = (() => {
     // Segment into toolpaths
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
     const rightToolpaths = segmentIntoToolpaths(rightLines, rightParsed);
-    console.log('Left toolpaths:', leftToolpaths.map(t => `${t.type}[${t.startLine+1}-${t.endLine+1}] "${t.name}" T${t.toolNumber}`));
-    console.log('Right toolpaths:', rightToolpaths.map(t => `${t.type}[${t.startLine+1}-${t.endLine+1}] "${t.name}" T${t.toolNumber}`));
 
     // Match toolpaths between files
     const tpMatches = matchToolpaths(leftToolpaths, rightToolpaths);
-    console.log('Toolpath matches:', tpMatches.map(m =>
-      m.left && m.right ? `"${m.left.name}" <-> "${m.right.name}"` :
-      m.left ? `"${m.left.name}" (removed)` : `"${m.right.name}" (added)`));
 
     const allOps = [];
 

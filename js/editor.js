@@ -104,6 +104,40 @@ const Editor = (() => {
       }, 0);
     });
 
+    // Event delegation for separator clicks and checkbox toggles (bound once, not per-render)
+    display.addEventListener('click', (e) => {
+      const sep = e.target.closest('.tp-separator');
+      if (!sep) return;
+      const cb = sep.querySelector('.tp-sep-cb');
+      if (e.target === cb) return; // let change handler deal with checkboxes
+      if (state.onSeparatorClick) state.onSeparatorClick(sep.dataset.tpId);
+    });
+    display.addEventListener('change', (e) => {
+      if (!e.target.classList.contains('tp-sep-cb')) return;
+      e.stopPropagation();
+      const sep = e.target.closest('.tp-separator');
+      if (sep && state.onSeparatorToggle) state.onSeparatorToggle(sep.dataset.tpId, e.target.checked);
+    });
+
+    // Event delegation for stack overlays (bound once per stack container)
+    function setupStackDelegation(stackEl) {
+      stackEl.addEventListener('click', (e) => {
+        const item = e.target.closest('.tp-stack-item');
+        if (!item) return;
+        const cb = item.querySelector('.tp-sep-cb');
+        if (e.target === cb) return;
+        if (state.onSeparatorClick) state.onSeparatorClick(item.dataset.tpId);
+      });
+      stackEl.addEventListener('change', (e) => {
+        if (!e.target.classList.contains('tp-sep-cb')) return;
+        e.stopPropagation();
+        const item = e.target.closest('.tp-stack-item');
+        if (item && state.onSeparatorToggle) state.onSeparatorToggle(item.dataset.tpId, e.target.checked);
+      });
+    }
+    setupStackDelegation(stackTop);
+    setupStackDelegation(stackBottom);
+
     // Sync scrolling from wrapper
     wrapper.addEventListener('scroll', () => {
       textarea.scrollTop = wrapper.scrollTop;
@@ -122,9 +156,14 @@ const Editor = (() => {
       }, 300);
     });
 
-    // Cursor tracking
-    textarea.addEventListener('click', () => updateCursorPos(textarea));
-    textarea.addEventListener('keyup', () => updateCursorPos(textarea));
+    // Cursor tracking (debounced to avoid O(n) split on every event)
+    let cursorTimer = null;
+    const debouncedCursor = () => {
+      clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(() => updateCursorPos(textarea), 50);
+    };
+    textarea.addEventListener('click', debouncedCursor);
+    textarea.addEventListener('keyup', debouncedCursor);
 
     // Tab support
     textarea.addEventListener('keydown', (e) => {
@@ -198,10 +237,6 @@ const Editor = (() => {
 
     state.stackTop.innerHTML = topHtml;
     state.stackBottom.innerHTML = bottomHtml;
-
-    // Bind stack item events
-    bindStackEvents(state.stackTop, state);
-    bindStackEvents(state.stackBottom, state);
   }
 
   function buildLabelHtml(sep, isPlaceholder) {
@@ -223,21 +258,6 @@ const Editor = (() => {
       `<input type="checkbox" class="tp-sep-cb"${checkedAttr}>` +
       buildLabelHtml(sep, sep.placeholder) +
       `</div>`;
-  }
-
-  function bindStackEvents(container, state) {
-    container.querySelectorAll('.tp-stack-item').forEach(el => {
-      const cb = el.querySelector('.tp-sep-cb');
-      const tpId = el.dataset.tpId;
-      el.addEventListener('click', (e) => {
-        if (e.target === cb) return;
-        if (state.onSeparatorClick) state.onSeparatorClick(tpId);
-      });
-      cb.addEventListener('change', (e) => {
-        e.stopPropagation();
-        if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
-      });
-    });
   }
 
   // =====================================================
@@ -286,22 +306,6 @@ const Editor = (() => {
     }
 
     state.display.innerHTML = html;
-
-    // Bind inline separator events (all separators including placeholders)
-    state.display.querySelectorAll('.tp-separator').forEach(el => {
-      const cb = el.querySelector('.tp-sep-cb');
-      const tpId = el.dataset.tpId;
-      el.addEventListener('click', (e) => {
-        if (e.target === cb) return;
-        if (state.onSeparatorClick) state.onSeparatorClick(tpId);
-      });
-      if (cb) {
-        cb.addEventListener('change', (e) => {
-          e.stopPropagation();
-          if (state.onSeparatorToggle) state.onSeparatorToggle(tpId, cb.checked);
-        });
-      }
-    });
 
     // Cache separator positions for stack overlay updates
     state.separatorPositions = [];
@@ -505,6 +509,8 @@ const Editor = (() => {
   function scrollToLine(side, lineNum) {
     const state = side === 'left' ? leftState : rightState;
     if (!state) return;
+    const lineCount = state.content.split('\n').length;
+    if (lineNum < 0 || lineNum >= lineCount) return;
     const lineHeight = 20;
     let displayLine = lineNum;
     for (let i = 0; i <= lineNum; i++) {

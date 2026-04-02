@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#1e1e1e">
   <title>G-Code Compare</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -20,7 +21,7 @@
       <button class="btn" id="btn-save-right">Save Right</button>
       <button class="btn btn-accent" id="btn-example">Load Example</button>
     </div>
-    <button id="settings-toggle" title="Settings">&#9881;</button>
+    <button id="settings-toggle" title="Settings" aria-label="Settings">&#9881;</button>
   </div>
 
   <!-- Color legend strip -->
@@ -140,8 +141,10 @@
   </div>
 
   <!-- Hidden file inputs -->
-  <input type="file" id="file-input-left" style="display:none" accept=".nc,.gcode,.tap,.txt,.ngc,.cnc,.prg">
-  <input type="file" id="file-input-right" style="display:none" accept=".nc,.gcode,.tap,.txt,.ngc,.cnc,.prg">
+  <input type="file" id="file-input-left" accept=".nc,.gcode,.tap,.txt,.ngc,.cnc,.prg">
+  <input type="file" id="file-input-right" accept=".nc,.gcode,.tap,.txt,.ngc,.cnc,.prg">
+
+  <noscript><p style="color:#d4d4d4;text-align:center;padding:40px">This tool requires JavaScript to be enabled.</p></noscript>
 
   <!-- Scripts -->
   <script src="js/diff-engine.js"></script>

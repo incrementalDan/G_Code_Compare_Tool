@@ -77,16 +77,16 @@ N120 M30`;
       const scrollLine = (tp) => (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
       const isRight = tpId.startsWith('R');
       if (isRight) {
-        const rId = parseInt(tpId.slice(1));
+        const rId = parseInt(tpId.slice(1), 10);
         const rtp = currentToolpaths.right.find(t => t.id === rId);
         if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
-        const ltp = currentToolpaths.left[rId];
+        const ltp = currentToolpaths.left.find(t => t.id === rId);
         if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
       } else {
-        const lId = parseInt(tpId);
+        const lId = parseInt(tpId, 10);
         const ltp = currentToolpaths.left.find(t => t.id === lId);
         if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
-        const rtp = currentToolpaths.right[lId];
+        const rtp = currentToolpaths.right.find(t => t.id === lId);
         if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
       }
     };

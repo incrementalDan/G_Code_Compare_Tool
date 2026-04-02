@@ -466,7 +466,7 @@ html, body {
 
 /* Disabled toolpath lines — dimmed with strikethrough line numbers */
 .line-disabled {
-  opacity: 0.3;
+  opacity: 0.4;
 }
 .line-disabled .line-num {
   text-decoration: line-through;
@@ -671,8 +671,44 @@ html, body {
   padding: 0 1px;
 }
 
+/* ===== Hidden file inputs ===== */
+#file-input-left, #file-input-right { display: none; }
+
 /* ===== Scrollbar styling ===== */
+* { scrollbar-width: thin; scrollbar-color: #424242 var(--bg-primary); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
 ::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #555555; }
+
+/* ===== Transitions for interactive elements ===== */
+.diff-nav-btn, .stepper-btn, #settings-toggle, .tp-separator, .tp-stack-item {
+  transition: background 0.15s, color 0.15s;
+}
+
+/* ===== Focus-visible outlines for keyboard navigation ===== */
+.btn:focus-visible, .diff-nav-btn:focus-visible, .stepper-btn:focus-visible,
+#settings-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ===== Empty state placeholder ===== */
+.editor-display:empty {
+  position: relative;
+}
+.editor-display:empty::before {
+  content: 'Open or drag a file here';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-dim);
+  font-size: 14px;
+  pointer-events: none;
+  white-space: nowrap;
+}
