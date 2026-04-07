@@ -546,7 +546,9 @@ html, body {
   flex: 1;
   overflow: hidden;
   position: relative;
+  cursor: pointer;
 }
+#diff-markers:hover { background: rgba(255,255,255,0.03); }
 
 .diff-marker {
   position: absolute;
