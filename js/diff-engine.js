@@ -873,24 +873,109 @@ const DiffEngine = (() => {
     return (tp.name || '') + '|' + (tp.opType || '') + '|T' + tp.toolNumber;
   }
 
-  function matchToolpaths(leftTPs, rightTPs) {
+  /**
+   * Compute content similarity (0–1) between two toolpath sections
+   * using LCS on line fingerprints.
+   */
+  function computeToolpathSimilarity(leftTP, rightTP, leftParsed, rightParsed, rules) {
+    const leftFP = [];
+    for (let i = leftTP.startLine; i <= leftTP.endLine; i++) {
+      if (leftParsed[i].isBlank) continue;
+      leftFP.push(fingerprint(leftParsed[i], rules, null));
+    }
+    const rightFP = [];
+    for (let i = rightTP.startLine; i <= rightTP.endLine; i++) {
+      if (rightParsed[i].isBlank) continue;
+      rightFP.push(fingerprint(rightParsed[i], rules, null));
+    }
+
+    if (leftFP.length === 0 && rightFP.length === 0) return 1.0;
+    if (leftFP.length === 0 || rightFP.length === 0) return 0.0;
+
+    const dp = buildLCSTable(leftFP, rightFP, leftFP.length, rightFP.length);
+    const lcsLen = dp[leftFP.length][rightFP.length];
+    return lcsLen / Math.max(leftFP.length, rightFP.length);
+  }
+
+  function matchToolpaths(leftTPs, rightTPs, leftParsed, rightParsed, rules) {
+    const SIMILARITY_THRESHOLD = 0.5;
+
+    // --- Pass 1: Key-based LCS matching ---
     const leftKeys = leftTPs.map(tp => tpKey(tp));
     const rightKeys = rightTPs.map(tp => tpKey(tp));
 
     const dp = buildLCSTable(leftKeys, rightKeys, leftKeys.length, rightKeys.length);
     const tpOps = backtrackLCS(leftKeys, rightKeys, dp, leftKeys.length, rightKeys.length);
 
-    const result = [];
+    const keyMatched = [];
+    const leftMatched = new Set();
+    const rightMatched = new Set();
+
     for (const op of tpOps) {
       if (op.type === 'equal') {
-        result.push({ left: leftTPs[op.leftIdx], right: rightTPs[op.rightIdx] });
-      } else if (op.type === 'removed') {
-        result.push({ left: leftTPs[op.leftIdx], right: null });
-      } else {
-        result.push({ left: null, right: rightTPs[op.rightIdx] });
+        keyMatched.push({ left: leftTPs[op.leftIdx], right: rightTPs[op.rightIdx] });
+        leftMatched.add(op.leftIdx);
+        rightMatched.add(op.rightIdx);
       }
     }
-    return result;
+
+    const unmatchedLeft = new Set();
+    const unmatchedRight = new Set();
+    for (let i = 0; i < leftTPs.length; i++) {
+      if (!leftMatched.has(i)) unmatchedLeft.add(i);
+    }
+    for (let i = 0; i < rightTPs.length; i++) {
+      if (!rightMatched.has(i)) unmatchedRight.add(i);
+    }
+
+    // --- Pass 2: Content similarity fallback ---
+    const simMatched = [];
+
+    if (unmatchedLeft.size > 0 && unmatchedRight.size > 0) {
+      const pairs = [];
+      for (const li of unmatchedLeft) {
+        for (const ri of unmatchedRight) {
+          let score = computeToolpathSimilarity(
+            leftTPs[li], rightTPs[ri], leftParsed, rightParsed, rules
+          );
+          // Tool number boost
+          if (leftTPs[li].toolNumber !== null && leftTPs[li].toolNumber === rightTPs[ri].toolNumber) {
+            score = Math.min(1.0, score + 0.1);
+          }
+          if (score >= SIMILARITY_THRESHOLD) {
+            pairs.push({ li, ri, score });
+          }
+        }
+      }
+
+      // Greedy match: highest score first
+      pairs.sort((a, b) => b.score - a.score);
+      const usedLeft = new Set();
+      const usedRight = new Set();
+      for (const p of pairs) {
+        if (usedLeft.has(p.li) || usedRight.has(p.ri)) continue;
+        simMatched.push({ left: leftTPs[p.li], right: rightTPs[p.ri] });
+        usedLeft.add(p.li);
+        usedRight.add(p.ri);
+        unmatchedLeft.delete(p.li);
+        unmatchedRight.delete(p.ri);
+      }
+    }
+
+    // --- Merge all results in file-position order ---
+    const allEntries = [];
+    for (const m of keyMatched) allEntries.push(m);
+    for (const m of simMatched) allEntries.push(m);
+    for (const i of unmatchedLeft) allEntries.push({ left: leftTPs[i], right: null });
+    for (const i of unmatchedRight) allEntries.push({ left: null, right: rightTPs[i] });
+
+    allEntries.sort((a, b) => {
+      const aPos = a.left ? a.left.startLine : a.right.startLine;
+      const bPos = b.left ? b.left.startLine : b.right.startLine;
+      return aPos - bPos;
+    });
+
+    return allEntries;
   }
 
   // =====================================================
@@ -914,8 +999,8 @@ const DiffEngine = (() => {
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
     const rightToolpaths = segmentIntoToolpaths(rightLines, rightParsed);
 
-    // Match toolpaths between files
-    const tpMatches = matchToolpaths(leftToolpaths, rightToolpaths);
+    // Match toolpaths between files (two-tier: key-based then content similarity)
+    const tpMatches = matchToolpaths(leftToolpaths, rightToolpaths, leftParsed, rightParsed, rules);
 
     const allOps = [];
 
