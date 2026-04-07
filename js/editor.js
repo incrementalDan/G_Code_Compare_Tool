@@ -35,33 +35,38 @@ const Editor = (() => {
     const display = document.createElement('div');
     display.className = 'editor-display';
 
-    // Toolpath stack overlays (fixed position at top/bottom of visible area)
-    const stackTop = document.createElement('div');
-    stackTop.className = 'tp-stack tp-stack-top';
-    const stackBottom = document.createElement('div');
-    stackBottom.className = 'tp-stack tp-stack-bottom';
+    // Toolpath header bar (shows current toolpath, click to toggle dropdown)
+    const tpHeader = document.createElement('div');
+    tpHeader.className = 'tp-header-bar';
+    tpHeader.innerHTML = '<span class="tp-header-label"></span><span class="tp-header-arrow">&#9660;</span>';
+
+    // Toolpath dropdown overlay (full list of all toolpaths)
+    const tpDropdown = document.createElement('div');
+    tpDropdown.className = 'tp-dropdown';
 
     wrapper.appendChild(display);
     wrapper.appendChild(textarea);
+    container.appendChild(tpHeader);
+    container.appendChild(tpDropdown);
     container.appendChild(wrapper);
-    container.appendChild(stackTop);
-    container.appendChild(stackBottom);
 
     const state = {
       side,
       wrapper,
       textarea,
       display,
-      stackTop,
-      stackBottom,
+      tpHeader,
+      tpDropdown,
       content: '',
       decorations: {},
       filename: 'untitled',
       alignmentPadding: {},
       toolpathSeparators: {},
       separatorPositions: [], // [{id, label, disabled, offsetTop}] cached after render
+      dropdownOpen: false,
       onSeparatorClick: null,
-      onSeparatorToggle: null
+      onSeparatorToggle: null,
+      onDropdownToggle: null // callback to sync dropdown state across sides
     };
 
     // Focus textarea on click anywhere in the editor — but not on separators
@@ -119,30 +124,36 @@ const Editor = (() => {
       if (sep && state.onSeparatorToggle) state.onSeparatorToggle(sep.dataset.tpId, e.target.checked);
     });
 
-    // Event delegation for stack overlays (bound once per stack container)
-    function setupStackDelegation(stackEl) {
-      stackEl.addEventListener('click', (e) => {
-        const item = e.target.closest('.tp-stack-item');
-        if (!item) return;
-        const cb = item.querySelector('.tp-sep-cb');
-        if (e.target === cb) return;
-        if (state.onSeparatorClick) state.onSeparatorClick(item.dataset.tpId);
-      });
-      stackEl.addEventListener('change', (e) => {
-        if (!e.target.classList.contains('tp-sep-cb')) return;
-        e.stopPropagation();
-        const item = e.target.closest('.tp-stack-item');
-        if (item && state.onSeparatorToggle) state.onSeparatorToggle(item.dataset.tpId, e.target.checked);
-      });
-    }
-    setupStackDelegation(stackTop);
-    setupStackDelegation(stackBottom);
+    // Toolpath header click toggles dropdown
+    tpHeader.addEventListener('click', () => {
+      const newState = !state.dropdownOpen;
+      setDropdownOpen(state, newState);
+      if (state.onDropdownToggle) state.onDropdownToggle(newState);
+    });
+
+    // Event delegation for dropdown items
+    tpDropdown.addEventListener('click', (e) => {
+      const item = e.target.closest('.tp-dropdown-item');
+      if (!item) return;
+      const cb = item.querySelector('.tp-sep-cb');
+      if (e.target === cb) return;
+      if (state.onSeparatorClick) state.onSeparatorClick(item.dataset.tpId);
+      // Close dropdown after navigation
+      setDropdownOpen(state, false);
+      if (state.onDropdownToggle) state.onDropdownToggle(false);
+    });
+    tpDropdown.addEventListener('change', (e) => {
+      if (!e.target.classList.contains('tp-sep-cb')) return;
+      e.stopPropagation();
+      const item = e.target.closest('.tp-dropdown-item');
+      if (item && state.onSeparatorToggle) state.onSeparatorToggle(item.dataset.tpId, e.target.checked);
+    });
 
     // Sync scrolling from wrapper
     wrapper.addEventListener('scroll', () => {
       textarea.scrollTop = wrapper.scrollTop;
       textarea.scrollLeft = wrapper.scrollLeft;
-      scheduleUpdateStacks(state);
+      scheduleUpdateHeader(state);
     });
 
     // Input handling
@@ -192,51 +203,74 @@ const Editor = (() => {
   }
 
   // =====================================================
-  // Toolpath Stack Overlays
+  // Toolpath Header Bar & Dropdown
   // =====================================================
 
-  let stackRafId = null;
-  let pendingStackStates = new Set();
-  function scheduleUpdateStacks(state) {
-    pendingStackStates.add(state);
-    if (stackRafId) return;
-    stackRafId = requestAnimationFrame(() => {
-      stackRafId = null;
-      for (const s of pendingStackStates) updateStacks(s);
-      pendingStackStates.clear();
+  let headerRafId = null;
+  let pendingHeaderStates = new Set();
+  function scheduleUpdateHeader(state) {
+    pendingHeaderStates.add(state);
+    if (headerRafId) return;
+    headerRafId = requestAnimationFrame(() => {
+      headerRafId = null;
+      for (const s of pendingHeaderStates) updateCurrentHeader(s);
+      pendingHeaderStates.clear();
     });
   }
 
-  function updateStacks(state) {
+  function updateCurrentHeader(state) {
+    const label = state.tpHeader.querySelector('.tp-header-label');
     if (!state.separatorPositions.length) {
-      state.stackTop.innerHTML = '';
-      state.stackBottom.innerHTML = '';
+      label.innerHTML = '';
+      state.tpHeader.classList.add('tp-header-empty');
+      return;
+    }
+    state.tpHeader.classList.remove('tp-header-empty');
+
+    const scrollTop = state.wrapper.scrollTop;
+
+    // Find the last separator that is at or above the current scroll position
+    let current = state.separatorPositions[0];
+    for (const sep of state.separatorPositions) {
+      if (sep.offsetTop <= scrollTop + 2) {
+        current = sep;
+      } else {
+        break;
+      }
+    }
+
+    if (current) {
+      label.innerHTML = buildLabelHtml(current, current.placeholder);
+    }
+  }
+
+  function setDropdownOpen(state, open) {
+    state.dropdownOpen = open;
+    state.tpDropdown.classList.toggle('open', open);
+    state.tpHeader.classList.toggle('active', open);
+    const arrow = state.tpHeader.querySelector('.tp-header-arrow');
+    if (arrow) arrow.innerHTML = open ? '&#9650;' : '&#9660;';
+  }
+
+  function rebuildDropdown(state) {
+    if (!state.separatorPositions.length) {
+      state.tpDropdown.innerHTML = '';
       return;
     }
 
-    const scrollTop = state.wrapper.scrollTop;
-    const viewHeight = state.wrapper.clientHeight;
-    const scrollBottom = scrollTop + viewHeight;
-
-    let topHtml = '';
-    let bottomHtml = '';
-
-    for (const sep of state.separatorPositions) {
-      const sepTop = sep.offsetTop;
-      const sepBottom = sepTop + 20;
-
-      if (sepBottom <= scrollTop) {
-        // Separator is above viewport → stack at top
-        topHtml += buildStackItem(sep);
-      } else if (sepTop >= scrollBottom) {
-        // Separator is below viewport → stack at bottom
-        bottomHtml += buildStackItem(sep);
-      }
-      // else: separator is visible inline, don't stack it
+    let html = '';
+    for (let i = 0; i < state.separatorPositions.length; i++) {
+      const sep = state.separatorPositions[i];
+      const checkedAttr = sep.disabled ? '' : ' checked';
+      const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+      const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
+      const rowCls = i % 2 === 0 ? 'tp-dropdown-even' : 'tp-dropdown-odd';
+      html += `<div class="tp-dropdown-item ${rowCls}${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+        `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
+        buildLabelHtml(sep, sep.placeholder) +
+        `</div>`;
     }
-
-    state.stackTop.innerHTML = topHtml;
-    state.stackBottom.innerHTML = bottomHtml;
+    state.tpDropdown.innerHTML = html;
   }
 
   function buildLabelHtml(sep, isPlaceholder) {
@@ -248,16 +282,6 @@ const Editor = (() => {
         `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}</span>`;
     }
     return `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>`;
-  }
-
-  function buildStackItem(sep) {
-    const checkedAttr = sep.disabled ? '' : ' checked';
-    const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
-    const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
-    return `<div class="tp-stack-item${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
-      `<input type="checkbox" class="tp-sep-cb"${checkedAttr}>` +
-      buildLabelHtml(sep, sep.placeholder) +
-      `</div>`;
   }
 
   // =====================================================
@@ -328,8 +352,9 @@ const Editor = (() => {
     const totalDisplayLines = lines.length + padTotal + sepCount;
     state.display.style.minHeight = (totalDisplayLines * lineHeight) + 'px';
 
-    // Update stacks after render
-    updateStacks(state);
+    // Update header and dropdown after render
+    rebuildDropdown(state);
+    updateCurrentHeader(state);
   }
 
   /**
@@ -504,6 +529,13 @@ const Editor = (() => {
     if (!state) return;
     state.onSeparatorClick = callbacks.onClick || null;
     state.onSeparatorToggle = callbacks.onToggle || null;
+    state.onDropdownToggle = callbacks.onDropdownToggle || null;
+  }
+
+  function setDropdownState(side, open) {
+    const state = side === 'left' ? leftState : rightState;
+    if (!state) return;
+    setDropdownOpen(state, open);
   }
 
   function scrollToLine(side, lineNum) {
@@ -529,6 +561,6 @@ const Editor = (() => {
   return {
     init, getValue, setValue, setFilename, getFilename,
     setDecorations, scrollToLine, setSyncScroll,
-    setSeparatorCallbacks, getLineCount, loadFileInto
+    setSeparatorCallbacks, setDropdownState, getLineCount, loadFileInto
   };
 })();

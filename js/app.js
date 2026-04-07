@@ -90,8 +90,13 @@ N120 M30`;
         if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
       }
     };
-    Editor.setSeparatorCallbacks('left', { onClick: sepClick, onToggle: sepToggle });
-    Editor.setSeparatorCallbacks('right', { onClick: sepClick, onToggle: sepToggle });
+    // Linked dropdown: opening one side opens the other
+    const dropdownToggle = (open) => {
+      Editor.setDropdownState('left', open);
+      Editor.setDropdownState('right', open);
+    };
+    Editor.setSeparatorCallbacks('left', { onClick: sepClick, onToggle: sepToggle, onDropdownToggle: dropdownToggle });
+    Editor.setSeparatorCallbacks('right', { onClick: sepClick, onToggle: sepToggle, onDropdownToggle: dropdownToggle });
 
     bindButtons();
     bindSettings();
