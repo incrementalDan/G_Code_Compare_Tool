@@ -175,6 +175,32 @@ N120 M30`;
     document.getElementById('btn-next-diff').addEventListener('click', () => navigateDiff(1));
 
     document.getElementById('settings-toggle').addEventListener('click', toggleSettings);
+
+    // Clickable diff gutter — click anywhere to jump to that position in both editors
+    document.getElementById('diff-markers').addEventListener('click', (e) => {
+      if (currentDiff.length === 0) return;
+      const container = e.currentTarget;
+      const rect = container.getBoundingClientRect();
+      const fraction = (e.clientY - rect.top) / rect.height;
+      const targetIdx = Math.round(fraction * (currentDiff.length - 1));
+
+      // Find the nearest non-equal op to where the user clicked
+      let best = -1;
+      let bestDist = Infinity;
+      for (let i = 0; i < currentDiff.length; i++) {
+        const op = currentDiff[i];
+        if (op.type === 'equal') continue;
+        if (isOpDisabled(op) && !hasStructuralCritical(op)) continue;
+        const dist = Math.abs(i - targetIdx);
+        if (dist < bestDist) { bestDist = dist; best = i; }
+      }
+
+      // Fall back to absolute position if no diff nearby (clicking between markers)
+      const op = currentDiff[best >= 0 ? best : targetIdx] || currentDiff[targetIdx];
+      if (!op) return;
+      if (op.leftIdx !== undefined) Editor.scrollToLine('left', op.leftIdx);
+      if (op.rightIdx !== undefined) Editor.scrollToLine('right', op.rightIdx);
+    });
   }
 
   // === Settings bindings ===
