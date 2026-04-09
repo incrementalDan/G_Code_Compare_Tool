@@ -96,7 +96,6 @@ html, body {
 .tp-separator .line-num { color: transparent; }
 .tp-sep-content {
   font-size: 12px;
-  color: #f0f0f0;
   font-weight: 700;
   display: flex !important;
   align-items: center;
@@ -109,27 +108,35 @@ html, body {
   accent-color: var(--accent);
   flex-shrink: 0;
 }
+.tp-tol-cb {
+  margin: 0;
+  cursor: pointer;
+  accent-color: #c89a10;
+  flex-shrink: 0;
+}
 .tp-sep-label {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Structured label parts — fixed-width N-number for alignment */
+/* Structured label parts — colors match G-code syntax highlighting */
 .tp-n-num {
   display: inline-block;
   min-width: 36px;
   font-weight: 800;
   font-size: 13px;
-  color: #f0f0f0;
+  color: #c586c0;
 }
 .tp-tool {
   display: inline-block;
   min-width: 28px;
+  color: #569cd6;
 }
 .tp-desc {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: #6a9955;
 }
 .tp-not-in-file {
   color: #888;
@@ -190,12 +197,43 @@ html, body {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.tp-header-arrow {
+.tp-tol-all-btn {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--text-dim);
+  font-weight: 700;
+  color: #888;
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  letter-spacing: 0.5px;
+}
+.tp-tol-all-btn:hover { background: #444; color: #bbb; }
+.tp-tol-all-btn.active {
+  background: #4a3800;
+  color: #c89a10;
+  border-color: #c89a10;
+}
+.tp-header-arrow {
+  font-size: 14px;
+  color: var(--accent);
   flex-shrink: 0;
   margin-left: 8px;
+  background: #3a3a42;
+  border: 1px solid #555;
+  border-radius: 3px;
+  width: 22px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
 }
+.tp-header-bar:hover .tp-header-arrow { background: #484850; border-color: #777; }
+.tp-header-bar.active .tp-header-arrow { background: var(--accent); color: #fff; border-color: var(--accent); }
 
 /* ===== Toolpath Dropdown Overlay ===== */
 .tp-dropdown {
@@ -238,6 +276,10 @@ html, body {
   cursor: pointer;
   accent-color: var(--accent);
   flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+}
+.tp-dropdown-item .tp-tol-cb {
   width: 13px;
   height: 13px;
 }
@@ -289,6 +331,7 @@ html, body {
 
 .legend-critical { background: var(--diff-major); border: 1px solid #c62828; }
 .legend-minor { background: var(--diff-minor); border: 1px solid #c89a10; }
+.legend-tolerance { background: rgba(100, 100, 50, 0.3); border: 1px dotted #666; }
 
 .legend-added { background: var(--diff-added); border: 1px solid #3fb950; }
 .legend-removed { background: var(--diff-removed); border: 1px solid #c62828; }
@@ -479,6 +522,9 @@ html, body {
 
 .diff-bg-removed { background-color: var(--diff-removed); }
 .diff-bg-removed .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
+
+.diff-bg-tolerance { background-color: rgba(100, 100, 50, 0.1); }
+.diff-bg-tolerance .line-content { border-left: 2px dotted #666; padding-left: 6px; }
 
 /* Disabled toolpath lines — dimmed with strikethrough line numbers */
 .line-disabled {

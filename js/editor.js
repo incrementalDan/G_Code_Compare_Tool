@@ -38,7 +38,9 @@ const Editor = (() => {
     // Toolpath header bar (shows current toolpath, click to toggle dropdown)
     const tpHeader = document.createElement('div');
     tpHeader.className = 'tp-header-bar';
-    tpHeader.innerHTML = '<span class="tp-header-label"></span><span class="tp-header-arrow">&#9660;</span>';
+    tpHeader.innerHTML = '<span class="tp-header-label"></span>' +
+      '<button class="tp-tol-all-btn" title="Toggle tolerance filter for all toolpaths">TOL</button>' +
+      '<span class="tp-header-arrow">&#9660;</span>';
 
     // Toolpath dropdown overlay (full list of all toolpaths)
     const tpDropdown = document.createElement('div');
@@ -66,6 +68,8 @@ const Editor = (() => {
       dropdownOpen: false,
       onSeparatorClick: null,
       onSeparatorToggle: null,
+      onToleranceToggle: null,
+      onToleranceToggleAll: null,
       onDropdownToggle: null // callback to sync dropdown state across sides
     };
 
@@ -113,40 +117,54 @@ const Editor = (() => {
     display.addEventListener('click', (e) => {
       const sep = e.target.closest('.tp-separator');
       if (!sep) return;
-      const cb = sep.querySelector('.tp-sep-cb');
-      if (e.target === cb) return; // let change handler deal with checkboxes
+      if (e.target.classList.contains('tp-sep-cb') || e.target.classList.contains('tp-tol-cb')) return;
       if (state.onSeparatorClick) state.onSeparatorClick(sep.dataset.tpId);
     });
     display.addEventListener('change', (e) => {
-      if (!e.target.classList.contains('tp-sep-cb')) return;
-      e.stopPropagation();
       const sep = e.target.closest('.tp-separator');
-      if (sep && state.onSeparatorToggle) state.onSeparatorToggle(sep.dataset.tpId, e.target.checked);
+      if (!sep) return;
+      e.stopPropagation();
+      if (e.target.classList.contains('tp-sep-cb')) {
+        if (state.onSeparatorToggle) state.onSeparatorToggle(sep.dataset.tpId, e.target.checked);
+      } else if (e.target.classList.contains('tp-tol-cb')) {
+        if (state.onToleranceToggle) state.onToleranceToggle(sep.dataset.tpId, e.target.checked);
+      }
     });
 
-    // Toolpath header click toggles dropdown
-    tpHeader.addEventListener('click', () => {
+    // Toolpath header click toggles dropdown (but not when clicking the TOL button)
+    tpHeader.addEventListener('click', (e) => {
+      if (e.target.classList.contains('tp-tol-all-btn')) return;
       const newState = !state.dropdownOpen;
       setDropdownOpen(state, newState);
       if (state.onDropdownToggle) state.onDropdownToggle(newState);
+    });
+    // Master tolerance toggle button
+    tpHeader.querySelector('.tp-tol-all-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const btn = e.target;
+      const isActive = btn.classList.toggle('active');
+      if (state.onToleranceToggleAll) state.onToleranceToggleAll(isActive);
     });
 
     // Event delegation for dropdown items
     tpDropdown.addEventListener('click', (e) => {
       const item = e.target.closest('.tp-dropdown-item');
       if (!item) return;
-      const cb = item.querySelector('.tp-sep-cb');
-      if (e.target === cb) return;
+      if (e.target.classList.contains('tp-sep-cb') || e.target.classList.contains('tp-tol-cb')) return;
       if (state.onSeparatorClick) state.onSeparatorClick(item.dataset.tpId);
       // Close dropdown after navigation
       setDropdownOpen(state, false);
       if (state.onDropdownToggle) state.onDropdownToggle(false);
     });
     tpDropdown.addEventListener('change', (e) => {
-      if (!e.target.classList.contains('tp-sep-cb')) return;
-      e.stopPropagation();
       const item = e.target.closest('.tp-dropdown-item');
-      if (item && state.onSeparatorToggle) state.onSeparatorToggle(item.dataset.tpId, e.target.checked);
+      if (!item) return;
+      e.stopPropagation();
+      if (e.target.classList.contains('tp-sep-cb')) {
+        if (state.onSeparatorToggle) state.onSeparatorToggle(item.dataset.tpId, e.target.checked);
+      } else if (e.target.classList.contains('tp-tol-cb')) {
+        if (state.onToleranceToggle) state.onToleranceToggle(item.dataset.tpId, e.target.checked);
+      }
     });
 
     // Sync scrolling from wrapper
@@ -262,11 +280,13 @@ const Editor = (() => {
     for (let i = 0; i < state.separatorPositions.length; i++) {
       const sep = state.separatorPositions[i];
       const checkedAttr = sep.disabled ? '' : ' checked';
+      const tolCheckedAttr = sep.toleranceEnabled ? ' checked' : '';
       const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
       const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
       const rowCls = i % 2 === 0 ? 'tp-dropdown-even' : 'tp-dropdown-odd';
       html += `<div class="tp-dropdown-item ${rowCls}${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
-        `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
+        `<input type="checkbox" class="tp-sep-cb"${checkedAttr} title="Show/hide">` +
+        `<input type="checkbox" class="tp-tol-cb"${tolCheckedAttr} title="Tolerance filter"> ` +
         buildLabelHtml(sep, sep.placeholder) +
         `</div>`;
     }
@@ -309,12 +329,14 @@ const Editor = (() => {
       if (sep) {
         sepCount++;
         const checkedAttr = sep.disabled ? '' : ' checked';
+        const tolCheckedAttr = sep.toleranceEnabled ? ' checked' : '';
         const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
         const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
         html += `<div class="editor-line tp-separator${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
           `<span class="line-num"></span>` +
           `<span class="line-content tp-sep-content">` +
-          `<input type="checkbox" class="tp-sep-cb"${checkedAttr}> ` +
+          `<input type="checkbox" class="tp-sep-cb"${checkedAttr} title="Show/hide this toolpath">` +
+          `<input type="checkbox" class="tp-tol-cb"${tolCheckedAttr} title="Tolerance filter"> ` +
           buildLabelHtml(sep, sep.placeholder) +
           `</span></div>`;
       }
@@ -331,7 +353,7 @@ const Editor = (() => {
 
     state.display.innerHTML = html;
 
-    // Cache separator positions for stack overlay updates
+    // Cache separator positions for header/dropdown updates
     state.separatorPositions = [];
     state.display.querySelectorAll('.tp-separator').forEach(el => {
       const tpId = el.dataset.tpId;
@@ -342,6 +364,7 @@ const Editor = (() => {
         labelParts: sep ? sep.labelParts : null,
         placeholder: sep ? !!sep.placeholder : false,
         disabled: sep ? sep.disabled : false,
+        toleranceEnabled: sep ? !!sep.toleranceEnabled : false,
         offsetTop: el.offsetTop
       });
     });
@@ -529,6 +552,8 @@ const Editor = (() => {
     if (!state) return;
     state.onSeparatorClick = callbacks.onClick || null;
     state.onSeparatorToggle = callbacks.onToggle || null;
+    state.onToleranceToggle = callbacks.onToleranceToggle || null;
+    state.onToleranceToggleAll = callbacks.onToleranceToggleAll || null;
     state.onDropdownToggle = callbacks.onDropdownToggle || null;
   }
 

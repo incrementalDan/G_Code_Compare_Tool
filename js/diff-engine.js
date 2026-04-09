@@ -815,7 +815,7 @@ const DiffEngine = (() => {
       }
 
       if (maxDelta <= minorThreshold + FP_EPS) {
-        op.type = 'equal';
+        op.type = 'tolerance';
       } else if (maxDelta <= majorThreshold + FP_EPS) {
         op.type = 'minor';
       } else {
@@ -926,6 +926,42 @@ const DiffEngine = (() => {
     }
     for (let i = 0; i < rightTPs.length; i++) {
       if (!rightMatched.has(i)) unmatchedRight.add(i);
+    }
+
+    // --- Pass 1b: Refine duplicate-key matches by content similarity ---
+    // When multiple right TPs share the same key, LCS may pick the wrong one.
+    // Check each key-matched pair: if unmatched right TPs have the same key,
+    // compare content similarity and swap to the best match.
+    for (let k = 0; k < keyMatched.length; k++) {
+      const match = keyMatched[k];
+      const matchKey = tpKey(match.left);
+      // Find unmatched right TPs with the same key
+      const sameKeyCandidates = [];
+      for (const ri of unmatchedRight) {
+        if (tpKey(rightTPs[ri]) === matchKey) sameKeyCandidates.push(ri);
+      }
+      if (sameKeyCandidates.length === 0) continue;
+
+      const currentRightIdx = rightTPs.indexOf(match.right);
+      const currentScore = computeToolpathSimilarity(
+        match.left, match.right, leftParsed, rightParsed, rules);
+
+      let bestScore = currentScore;
+      let bestRi = -1;
+      for (const ri of sameKeyCandidates) {
+        const score = computeToolpathSimilarity(
+          match.left, rightTPs[ri], leftParsed, rightParsed, rules);
+        if (score > bestScore) { bestScore = score; bestRi = ri; }
+      }
+
+      if (bestRi >= 0) {
+        // Swap: unmatch current right, match the better candidate
+        unmatchedRight.add(currentRightIdx);
+        rightMatched.delete(currentRightIdx);
+        unmatchedRight.delete(bestRi);
+        rightMatched.add(bestRi);
+        keyMatched[k] = { left: match.left, right: rightTPs[bestRi] };
+      }
     }
 
     // --- Pass 2: Content similarity fallback ---
@@ -1045,6 +1081,9 @@ const DiffEngine = (() => {
         }
       }
     }
+
+    // Snapshot raw types before tolerance reclassification
+    for (const op of allOps) op.rawType = op.type;
 
     // Post-process: apply tolerance classification to all coordinate diffs
     applyToleranceClassification(allOps, minorThreshold, majorThreshold);

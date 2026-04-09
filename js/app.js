@@ -24,6 +24,7 @@ const App = (() => {
   let currentToolpaths = { left: [], right: [] };
   let currentTpMatches = []; // toolpath match pairs from diff engine
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
+  let toleranceEnabledIds = new Set(); // toolpath IDs with tolerance filtering ON (default: empty = all OFF)
 
   // === Example data ===
   const EXAMPLE_LEFT = `O1000 (PART PROGRAM - KNOWN GOOD)
@@ -90,13 +91,28 @@ N120 M30`;
         if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
       }
     };
+    const tolToggle = (tpId, checked) => {
+      if (checked) toleranceEnabledIds.add(tpId);
+      else toleranceEnabledIds.delete(tpId);
+      applyDecorations();
+    };
+    const tolToggleAll = (checked) => {
+      if (checked) {
+        for (const tp of currentToolpaths.left) toleranceEnabledIds.add(String(tp.id));
+        for (const tp of currentToolpaths.right) toleranceEnabledIds.add('R' + tp.id);
+      } else {
+        toleranceEnabledIds.clear();
+      }
+      applyDecorations();
+    };
     // Linked dropdown: opening one side opens the other
     const dropdownToggle = (open) => {
       Editor.setDropdownState('left', open);
       Editor.setDropdownState('right', open);
     };
-    Editor.setSeparatorCallbacks('left', { onClick: sepClick, onToggle: sepToggle, onDropdownToggle: dropdownToggle });
-    Editor.setSeparatorCallbacks('right', { onClick: sepClick, onToggle: sepToggle, onDropdownToggle: dropdownToggle });
+    const cbs = { onClick: sepClick, onToggle: sepToggle, onToleranceToggle: tolToggle, onToleranceToggleAll: tolToggleAll, onDropdownToggle: dropdownToggle };
+    Editor.setSeparatorCallbacks('left', cbs);
+    Editor.setSeparatorCallbacks('right', cbs);
 
     bindButtons();
     bindSettings();
@@ -276,6 +292,7 @@ N120 M30`;
       case 'minor': return 'minor';
       case 'added': return 'added';
       case 'removed': return 'removed';
+      case 'tolerance': return 'tolerance';
       default: return opType;
     }
   }
@@ -314,6 +331,27 @@ N120 M30`;
   function hasStructuralCritical(op) {
     if (!op.tokenDiffs) return false;
     return op.tokenDiffs.some(d => d.severity === 'critical');
+  }
+
+  /**
+   * Get effective op type considering per-toolpath tolerance setting.
+   * If tolerance is enabled for this op's toolpath, use the tolerance-classified type.
+   * If tolerance is disabled (default), use the raw pre-tolerance type.
+   */
+  function effectiveType(op) {
+    if (!op.rawType || op.rawType === op.type) return op.type;
+    // op.type differs from rawType — tolerance was applied
+    // Check if tolerance is enabled for this toolpath
+    if (op.leftIdx !== undefined) {
+      const tp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
+      if (tp && toleranceEnabledIds.has(String(tp.id))) return op.type;
+    }
+    if (op.rightIdx !== undefined && op.leftIdx === undefined) {
+      const tp = getToolpathForLine(op.rightIdx, currentToolpaths.right);
+      if (tp && toleranceEnabledIds.has('R' + tp.id)) return op.type;
+    }
+    // Tolerance OFF for this toolpath — use raw type
+    return op.rawType;
   }
 
   function findCorrespondingLine(unmatchedEntry, targetSide, matches, lineCount) {
@@ -362,8 +400,9 @@ N120 M30`;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
     currentTpMatches = diffResult.tpMatches || [];
 
-    // Reset disabled toolpaths
+    // Reset toolpath states
     disabledToolpathIds.clear();
+    toleranceEnabledIds.clear();
 
     // Apply decorations and update UI
     applyDecorations();
@@ -429,15 +468,18 @@ N120 M30`;
         }
       }
 
+      // Resolve effective type considering per-toolpath tolerance setting
+      const etype = effectiveType(op);
+
       // One-sided ops: always count padding (even if disabled), optionally skip decoration
-      if (op.type === 'added') {
+      if (etype === 'added') {
         leftPendingPad++;
         if (disabled && !hasStructuralCritical(op)) continue;
         rightDecos.push({ line: op.rightIdx, type: 'added' });
         diffPositions.push(i);
         continue;
       }
-      if (op.type === 'removed') {
+      if (etype === 'removed') {
         rightPendingPad++;
         if (disabled && !hasStructuralCritical(op)) continue;
         leftDecos.push({ line: op.leftIdx, type: 'removed' });
@@ -449,7 +491,7 @@ N120 M30`;
       if (disabled && !hasStructuralCritical(op)) continue;
 
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
-      if (op.type === 'equal' || hasBothSides) {
+      if (etype === 'equal' || hasBothSides) {
         // Flush pending padding
         if (leftPendingPad > 0 && op.leftIdx !== undefined) {
           leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
@@ -459,11 +501,14 @@ N120 M30`;
           rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
           rightPendingPad = 0;
         }
-        if (op.type !== 'equal') {
-          const dt = decoType(op.type);
+        if (etype !== 'equal') {
+          const dt = decoType(etype);
           leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
           rightDecos.push({ line: op.rightIdx, type: dt, tokenDiffs: op.tokenDiffs });
-          diffPositions.push(i);
+          // Tolerance diffs get decoration but NOT navigation/stats
+          if (etype !== 'tolerance') {
+            diffPositions.push(i);
+          }
         }
       }
     }
@@ -485,7 +530,8 @@ N120 M30`;
         id: String(tp.id),
         label: buildTpLabel(tp),
         labelParts: buildTpLabelParts(tp),
-        disabled: disabledToolpathIds.has(String(tp.id))
+        disabled: disabledToolpathIds.has(String(tp.id)),
+        toleranceEnabled: toleranceEnabledIds.has(String(tp.id))
       };
     }
     const rightSeparators = {};
@@ -495,7 +541,8 @@ N120 M30`;
         id: 'R' + tp.id,
         label: buildTpLabel(tp),
         labelParts: buildTpLabelParts(tp),
-        disabled: disabledToolpathIds.has('R' + tp.id)
+        disabled: disabledToolpathIds.has('R' + tp.id),
+        toleranceEnabled: toleranceEnabledIds.has('R' + tp.id)
       };
     }
 
@@ -511,6 +558,7 @@ N120 M30`;
             label: buildTpLabel(match.left) + ' (not in file)',
             labelParts: buildTpLabelParts(match.left),
             disabled: disabledToolpathIds.has(String(match.left.id)),
+            toleranceEnabled: toleranceEnabledIds.has(String(match.left.id)),
             placeholder: true
           };
         }
@@ -523,6 +571,7 @@ N120 M30`;
             label: buildTpLabel(match.right) + ' (not in file)',
             labelParts: buildTpLabelParts(match.right),
             disabled: disabledToolpathIds.has('R' + match.right.id),
+            toleranceEnabled: toleranceEnabledIds.has('R' + match.right.id),
             placeholder: true
           };
         }
@@ -550,8 +599,16 @@ N120 M30`;
     // Update diff markers in center gutter
     updateDiffMarkers();
 
-    // Update status bar
-    const stats = DiffEngine.countStats(currentDiff);
+    // Update status bar using effective types (excludes tolerance diffs)
+    const stats = { critical: 0, minor: 0, added: 0, removed: 0 };
+    for (const op of currentDiff) {
+      const et = effectiveType(op);
+      if (et === 'critical' || et === 'coordinate' || et === 'coordinate-z') stats.critical++;
+      else if (et === 'minor') stats.minor++;
+      else if (et === 'added') stats.added++;
+      else if (et === 'removed') stats.removed++;
+      // 'tolerance' and 'equal' are not counted
+    }
     updateStatusBar(stats, leftLineCount, rightLineCount);
 
     // Reset diff navigation
@@ -575,12 +632,13 @@ N120 M30`;
 
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
-      if (op.type === 'equal') continue;
+      const etype = effectiveType(op);
+      if (etype === 'equal' || etype === 'tolerance') continue;
       // Filter disabled toolpath ops from gutter, but let structural critical diffs through
       const disabled = isOpDisabled(op);
       if (disabled && !hasStructuralCritical(op)) continue;
 
-      const dt = decoType(op.type);
+      const dt = decoType(etype);
       const top = Math.round((i / total) * height);
       const key = `${top}-${dt}`;
       if (seen.has(key)) continue;
@@ -644,6 +702,7 @@ N120 M30`;
     currentToolpaths = { left: [], right: [] };
     currentTpMatches = [];
     disabledToolpathIds.clear();
+    toleranceEnabledIds.clear();
     clearDecorations();
     updateStatusBar({ critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
   }
