@@ -3,274 +3,304 @@
 ## What This Tool Is
 
 A browser-based G-code diff tool for CNC machinists. No build step, no backend,
-no npm. Opens as a static HTML file. Built for a Brother 3/5-axis mill shop but
-designed to be configurable for other machines and controls.
+no npm. Opens as a static HTML file in Chrome. Built for a Brother 3/5-axis mill
+shop (Fusion 360 posts, G100 tool calls) but designed to be configurable for
+other machines and controls.
 
 The tool compares two G-code files: a known-good machine file (left) against a
 freshly posted CAM file (right). The goal is to catch meaningful differences
-quickly and safely. Missed differences can cause machine crashes — $10k–$100k
-damage — so accuracy and clarity are the top priority.
+quickly and safely. Missed differences can cause machine crashes — real money.
+Accuracy and clarity are the top priority.
 
------
-
-## Current State (as of last session)
-
-### Working
-
-- Single HTML file, CDN imports only, opens from disk
-- Two editable CodeMirror panes (left = Machine File, right = CAM File)
-- G-code aware diff engine:
-  - `canonicalize()` strips noise per active ignore rules
-  - `classifyDifference()` classifies diffs as major / minor / equal using numeric tolerance
-  - LCS-based line diff
-- Inline token highlighting: only the differing token within a line is highlighted
-  (e.g. X1.3454 vs X1.2334 — only the value lights up, not the whole line)
-- Diff classification colors (major = deep red, minor = amber, added = teal,
-  removed = burgundy)
-- Tolerance sliders (minor threshold, major threshold), configurable, step 0.0001
-- Ignore rules: comments, whitespace, case, G/M normalization, line numbers,
-  block delete
-- Center minimap/scrollbar showing diff density across the whole file
-- Settings panel with localStorage persistence
-- Load Example button with test G-code covering all diff types
-- Drag and drop file loading
-
-### Dropped / Not Building
-
-- Phase 2 accept/review workflow — removed entirely
-- Phase 3 back-plotter — deferred indefinitely
-- Phase 4 advanced features — deferred indefinitely
-
------
-
-## What to Build Next
-
-### 1. Toolpath Segmentation (highest priority)
-
-Detect toolpath boundaries and break both files into labeled segments. This is
-the foundation for everything else below.
-
-#### Detection Logic — Two Passes
-
-**Pass 1 — Primary signal (most reliable):**
-A new toolpath starts when there is:
-
-- 1 blank line, followed by
-- 2 consecutive comment-only lines (lines containing only parenthetical comments,
-  no G or M codes)
-
-This is the most common pattern from Fusion 360 posts on Brother machines.
-
-**Pass 2 — Corroborating signals (use to confirm or catch missed boundaries):**
-After Pass 1, scan for any of these within ±3 lines of an existing boundary, or
-as standalone boundary triggers if Pass 1 missed them:
-
-|Signal                 |Notes                                                               |
-|-----------------------|--------------------------------------------------------------------|
-|N-block resequence     |Jump or reset in N numbers (e.g. N9999 → N10)                       |
-|Z-home move            |Configurable string, default: `G28 G91 Z0` or `G53 Z0.`             |
-|Tool change            |Line containing `M06` or `M6`, usually paired with `T##`            |
-|M298                   |Brother-specific, on by default, configurable off                   |
-|Standalone comment line|Only a comment, no G/M code — corroborating only, not a solo trigger|
-
-**Manual NC / interruptions:**
-If a boundary signal fires but no tool change is found within ±5 lines, treat
-it as a **section break** (not a full toolpath). Still collapsible and visible
-in the navigator, but styled differently — lighter header, no T## shown.
-
-#### Toolpath Header Format
-
-Each detected segment gets a header row:
-
-```
-N## | T## — (first comment line text) | (second comment line text)
-```
-
-Example: `N10 | T42 — ADAPTIVE ROUGH XY | 6MM FLAT ENDMILL`
-
-If any field is missing, omit it gracefully. Don’t show `T## | undefined`.
-
------
-
-### 2. Toolpath Navigator Panel
-
-A persistent panel (below or beside the editors) that lists all detected
-toolpath segments as rows in a scrollable table.
-
-#### Behavior
-
-- As the user scrolls the code, the navigator highlights the row corresponding
-  to the current toolpath in view
-- The active row floats or scrolls within the navigator to stay visible
-- Clicking a row jumps both editors to that toolpath’s start line
-- Both left and right panes share one navigator (they are synced already)
-
-#### Per-Row Controls
-
-Each row in the navigator has:
-
-|Control            |Purpose                                                                                                                                                     |
-|-------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|Checkbox — Compare |When OFF: suppress all diffs in this toolpath EXCEPT critical differences (see below). Lines still visible, not collapsed unless user also enables collapse.|
-|Checkbox — Collapse|When ON: collapse this toolpath’s lines to a single summary row in the editor view                                                                          |
-|Tolerance override |Optional per-toolpath major/minor threshold override (can inherit global default)                                                                           |
-
-The navigator replaces the settings panel checkbox list for per-toolpath control.
-Global tolerance sliders remain in settings as the default for all toolpaths.
-
------
-
-### 3. Critical Differences — Always Surface, Never Suppress
-
-Even when a toolpath’s Compare checkbox is OFF, these difference types must
-always be detected and shown. They get their own distinct highlight color
-(bright orange or magenta — must visually stand apart from normal major/minor).
-
-|Critical Type                             |Detection Logic                                                                                                                                                                           |
-|------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-|Work offset change                        |Any change to G54–G59 on a line. Extended formats (G154 Pn, G54.n) are future — for now handle standard G54–G59 only. Work offset changes must be very visually loud.                     |
-|Spindle speed                             |Any difference in S## value on a line                                                                                                                                                     |
-|Tool / offset call                        |Any difference involving T##, H##, or D##                                                                                                                                                 |
-|Feed rate                                 |Any difference in F## value on a line                                                                                                                                                     |
-|Comment content                           |Any line where the comment text differs between files (even if the G/M code part is the same). A commented-out line in the machine file vs. an active line in CAM is especially important.|
-|Macro variables                           |Any line containing # (macro variable reference). Any difference in #-based expressions, assignments, or conditionals. Flag the whole line as critical if any # token differs.            |
-|Missing or extra line at toolpath boundary|A line present in one file but not the other within ±2 lines of a toolpath boundary                                                                                                       |
-
-
-> These rules will grow over time. Keep them in a separate configurable data
-> structure (object or array) so new rules can be added without refactoring.
-
------
-
-## Diff Engine Rules (Do Not Change Without Review)
-
-### canonicalize() — current implementation
-
-```javascript
-function canonicalize(line, rules) {
-  let s = line;
-  if (rules.ignoreParenComments)  s = s.replace(/\([^)]*\)/g, '');
-  if (rules.ignoreSemiComments)   s = s.replace(/;.*$/, '');
-  if (rules.ignoreLineNumbers)    s = s.replace(/^N\d+\s*/i, '');
-  if (rules.ignoreBlockDelete)    s = s.replace(/^\//,'');
-  if (rules.ignoreCase)           s = s.toLowerCase();
-  if (rules.normalizeGMCodes)     s = s.replace(/([gGmM])0+(\d)/g, '$1$2');
-  if (rules.ignoreWhitespace)     s = s.replace(/\s+/g, ' ').trim();
-  return s;
-}
-```
-
-### classifyDifference() — current implementation
-
-```javascript
-function classifyDifference(canonLineA, canonLineB, minorEps, majorEps) {
-  const numRegex = /-?\d+\.?\d*/g;
-  const numsA = [...canonLineA.matchAll(numRegex)].map(m => parseFloat(m[0]));
-  const numsB = [...canonLineB.matchAll(numRegex)].map(m => parseFloat(m[0]));
-  const skeletonA = canonLineA.replace(numRegex, '###');
-  const skeletonB = canonLineB.replace(numRegex, '###');
-  if (skeletonA !== skeletonB) return 'major';
-  if (numsA.length !== numsB.length) return 'major';
-  let worstSeverity = 'equal';
-  for (let i = 0; i < numsA.length; i++) {
-    const delta = Math.abs(numsA[i] - numsB[i]);
-    if (delta <= minorEps) continue;
-    else if (delta <= majorEps) worstSeverity = 'minor';
-    else return 'major';
-  }
-  return worstSeverity;
-}
-```
-
-Do not modify these without flagging it. They are the core of the tool and
-changes here affect everything downstream.
-
------
-
-## Configurable Settings (User-Facing)
-
-### Global (applies to all toolpaths unless overridden)
-
-|Setting                  |Default|Notes                       |
-|-------------------------|-------|----------------------------|
-|Minor threshold          |0.0002 |Step 0.0001                 |
-|Major threshold          |0.0005 |Step 0.0001, must be > minor|
-|Ignore paren comments    |ON     |                            |
-|Ignore semicolon comments|ON     |                            |
-|Ignore whitespace        |ON     |                            |
-|Ignore case              |ON     |                            |
-|Normalize G/M codes      |ON     |G01→G1, M06→M6              |
-|Ignore line numbers      |OFF    |                            |
-|Ignore block delete      |OFF    |                            |
-|Synchronized scrolling   |ON     |                            |
-
-### Machine-Specific (in settings panel)
-
-|Setting                |Default     |Notes                               |
-|-----------------------|------------|------------------------------------|
-|Z-home string          |`G28 G91 Z0`|Used for toolpath boundary detection|
-|Z-home string 2        |`G53 Z0.`   |Second common pattern               |
-|M298 as boundary signal|ON          |Brother-specific, can disable       |
-
------
+---
 
 ## File Structure
 
 ```
 gcode-compare/
-├── index.html
+├── index.html          — layout, UI skeleton, loads all scripts
 ├── css/
-│   └── style.css
+│   └── style.css       — all styles (dark theme, deco colors, separator UI)
 ├── js/
-│   ├── diff-engine.js      — canonicalize, classifyDifference, LCS
-│   ├── toolpath.js         — boundary detection, segment data structure
-│   ├── editor.js           — CodeMirror setup, syntax highlighting, drag-drop
-│   └── app.js              — UI wiring, settings, state, navigator panel
-├── CLAUDE.md
-├── README.md
-└── .gitignore
+│   ├── diff-engine.js  — parser, toolpath segmentation, LCS, token classification
+│   ├── editor.js       — single-layer line-div editor, rendering, decorations
+│   └── app.js          — UI wiring, settings, state, diff coordination
+└── CLAUDE.md
 ```
 
------
+No build step. CDN imports only. Opens directly from disk.
+
+---
+
+## Current State — What Is Built and Working
+
+### Diff Engine (`diff-engine.js`)
+
+**Full token-aware G-code parser** (`parseGCodeLine`):
+- Parses every token on a line into typed objects with character positions
+- Token types: gCode, mCode, axis (X/Y/Z), rotary (A/B/C), arcParam (I/J/K),
+  feed (F), spindle (S), tool (T), hOffset (H), dOffset (D), param (R/P/Q/L),
+  macro (#), lineNumber (N), comment (paren and semicolon), blockDelete (/),
+  program (O number)
+- Tracks isBlank, isCommentOnly, blockDelete flags per line
+
+**Modal G-code state tracking** (`trackModalState`):
+- Tracks current motion mode (G0/G1/G2/G3) across a file
+- Used in fingerprints for bare coordinate lines (no explicit G-code)
+
+**Toolpath segmentation** (`segmentIntoToolpaths`) — Brother Speedio / Fusion 360:
+- Pass 1 (primary): blank line followed by 2+ consecutive comment-only lines
+- Pass 2: associates G100 tool call lines (with X/Y or S or M03/M04) to
+  comment-pair anchors within +20 lines forward
+- Expands preamble backward from each anchor (up to 40 lines): absorbs
+  G28/G53/M05/M09/M298/rapids/blanks into the segment, stops at cutting moves
+- Detects and labels: preamble (Program Header), toolpath, program_end (M30)
+- Each toolpath object: { id, type, name, opType, toolNumber, nNumber,
+  spindleSpeed, startLine, anchorLine, endLine }
+- Fallback to G100-only detection if no comment-pairs found
+- Fallback to comment-based sections if no anchors at all
+
+**Toolpath matching** (`matchToolpaths`):
+- Pass 1: key-based LCS on "name|opType|T{toolNumber}" strings
+- Pass 1b: content-similarity refinement when duplicate keys exist
+- Pass 2: content similarity fallback (LCS on fingerprints, threshold 0.5,
+  +0.1 boost for matching tool number)
+- Produces matched pairs { left, right } plus unmatched left/right entries
+
+**Fingerprinting** (`fingerprint`):
+- Structural signature for LCS matching: G-codes, M-codes, axis letters present,
+  arc params, rotary, F/S/T/H/D presence, macro presence
+- Comment-only lines use full comment text for precise matching
+- Bare coordinate lines prepend modal G-code
+
+**Token-level classification** (`classifyTokens`):
+- Compares parsed token fields between two matched lines
+- Returns tokenDiffs array — each diff has: field, severity, leftVal, rightVal,
+  leftTokens, rightTokens (with character positions for highlighting)
+- Severity levels:
+  - critical: M-codes, T/H/D offsets, spindle S, feed F, comments, macros,
+    non-motion G-code changes, structural differences
+  - coordinate: X/Y/A/B/C/I/J/K value differences
+  - coordinate-z: Z value differences (treated same as coordinate currently)
+  - equal: no difference
+- Motion code interchange (G0/G1/G2/G3 only) classified as minor not critical
+
+**Tolerance classification** (`applyToleranceClassification`):
+- Post-processes coordinate diffs using minorThreshold / majorThreshold
+- If max delta <= minorThreshold: tolerance (hidden by default)
+- If max delta <= majorThreshold: minor (amber)
+- If max delta > majorThreshold: critical (red)
+- Critical token diffs (feed, spindle, etc.) are never downgraded by tolerance
+
+**LCS engine**: Uint16Array DP table, standard backtrack
+
+**Stats** (`countStats`): counts critical, minor, added, removed ops
+
+### Editor (`editor.js`)
+
+**Custom single-layer line-div editor** (no CodeMirror — built from scratch):
+- Hidden textarea captures all input; display div renders styled line divs
+- Each line div: gutter line number + syntax-highlighted content
+- Alignment padding lines (blank spacers to keep both panes line-aligned)
+- Toolpath separator rows inline in the display (with checkboxes)
+- Fully editable — textarea handles all keyboard input including Tab (2 spaces)
+- 300ms debounce on input before triggering diff
+
+**Syntax highlighting** (`syntaxHighlightLine`):
+- Applied via regex on each line's raw text
+- Colors: G-codes (blue), M-codes (purple), T (red), H/D (red), F (orange),
+  S (orange), X/Y (green), Z (teal), A/B/C (teal), I/J/K (cyan),
+  macros/# (magenta), comments (gray italic), N-numbers (dim)
+- Token diff highlighting: uses Unicode private-use sentinels (U+E000/E001)
+  inserted into the raw string before HTML escaping, marks changed tokens
+  with a token-diff span wrapper
+
+**Toolpath separator rows** (inline in editor display):
+- Rendered as special editor-line tp-separator divs at anchorLine position
+- Each row: Show/hide checkbox + Tolerance checkbox + label (N## | T## | desc)
+- Placeholder separators shown on opposite side when a toolpath is unmatched
+- Event delegation handles clicks/changes (bound once, not per-render)
+
+**Toolpath header bar** (sticky bar above each pane):
+- Shows the current toolpath label as you scroll
+- Tracks scroll position, updates via rAF-batched updateCurrentHeader
+- Click to open/close dropdown of all toolpaths
+- TOL master toggle button to enable/disable tolerance filtering for all toolpaths
+- Both panes' dropdowns open and close in sync
+
+**Toolpath dropdown**:
+- Lists all detected toolpaths with Show/hide and Tolerance checkboxes
+- Click a row to jump to that toolpath (closes dropdown after)
+
+**Synchronized scrolling**: bidirectional, rAF-guarded against loops
+
+**Drag and drop**: per-pane and global (drop anywhere to left pane, drop 2 to both)
+
+**File I/O**: Open Left/Right buttons, Save Left/Right (browser download)
+
+**Scroll to line** (`scrollToLine`): accounts for alignment padding and separator rows
+
+### App (`app.js`)
+
+**Settings** (localStorage, versioned at SETTINGS_VERSION = 6):
+- ignoreParenComments (default: OFF), ignoreSemiComments (ON),
+  ignoreWhitespace (ON), ignoreCase (ON), normalizeGMCodes (ON),
+  ignoreLineNumbers (ON), ignoreBlockDelete (OFF)
+- minorThreshold (default: 0.001), majorThreshold (default: 0.01)
+- syncScroll (ON)
+- Settings version bump clears stale saved settings
+
+**Per-toolpath state**:
+- disabledToolpathIds: Set of toolpath IDs whose diffs are suppressed
+  (structural critical diffs always show through regardless)
+- toleranceEnabledIds: Set of toolpath IDs where tolerance classification
+  is active (default: OFF for all — must be explicitly enabled per toolpath
+  or via master toggle)
+
+**Diff execution** (`runDiff`):
+- Splits text to lines, calls DiffEngine.computeSemanticDiff
+- Resets all per-toolpath state on each full re-diff
+- Calls applyDecorations
+
+**Decoration application** (`applyDecorations`):
+- Builds left/right decoration arrays and alignment padding from diff ops
+- Applies isOpDisabled check: disabled toolpath ops are skipped unless
+  hasStructuralCritical (feed, spindle, tool, offsets, M-codes, comments, macros)
+- effectiveType: returns tolerance-classified type if tolerance enabled for
+  that toolpath, otherwise returns raw pre-tolerance type
+- Builds leftSeparators / rightSeparators keyed by anchorLine
+- Adds placeholder separators for unmatched toolpaths on the opposite side
+- Equalizes total display line counts between panes (accounts for padding + separators)
+- Updates center gutter diff markers
+- Updates status bar (toolpath counts, critical/minor counts, line counts)
+
+**Center diff gutter** (`updateDiffMarkers`):
+- Proportional colored tick marks for all visible diffs
+- Clickable: click anywhere to jump both editors to nearest diff at that position
+
+**Diff navigation**: F7 / Shift+F7 / Prev/Next buttons, skips tolerance and
+disabled-toolpath ops
+
+**Status bar**: Toolpaths L/R, Critical count, Minor count, Lines L/R,
+line-count mismatch warning (>10% difference), cursor position
+
+**Other**: New (clear both), Swap panes, Load Example (built-in test G-code)
+
+---
+
+## What Is NOT Built Yet
+
+### 1. Per-Toolpath Tolerance Threshold Override
+Currently there is one global minor/major threshold pair. The plan is to allow
+each toolpath row to have its own threshold override. The toleranceEnabledIds
+infrastructure is in place but per-row threshold values are not.
+
+### 2. Work Offset Critical Detection
+Work offset changes (G54-G59) need a distinct visual treatment that stands apart
+from normal critical diffs. Currently caught by the G-code diff but not given
+their own highlight tier. Must always surface even in disabled toolpaths.
+
+### 3. Extended Work Offset Formats
+G154 Pn, G54.n — not yet handled. Add later with a configurable format setting.
+
+### 4. Machine-Specific Settings
+Z-home string (default: G28 G91 Z0 / G53 Z0.) is hardcoded in segmentation.
+Should be user-configurable in the settings panel.
+
+### 5. Toolpath Navigator Scrolling Table
+The dropdown list from the header bar is the current navigation UI. The
+originally planned scrolling table panel (rows moving bottom-to-top as you
+scroll through code) is not built. Evaluate whether the dropdown is sufficient.
+
+---
+
+## Critical Difference Rules
+
+These diffs must always surface even when a toolpath's Show/Hide is OFF.
+Currently enforced via hasStructuralCritical in app.js.
+
+All critical rules live in classifyTokens in diff-engine.js.
+Do not scatter them. Do not duplicate them in app.js or editor.js.
+This list will grow — add new rules to classifyTokens only.
+
+| Type | How Detected |
+|---|---|
+| Work offset | G54-G59 G-code change (needs dedicated highlight tier — not yet) |
+| Spindle speed | S value difference |
+| Tool / offset call | T, H, or D value difference |
+| Feed rate | F value difference |
+| Comment content | Any comment text difference, including commented-out lines |
+| Macros | Any # token difference |
+| M-codes | Any M-code set difference |
+| Non-motion G-codes | G-code changes that are not G0/G1/G2/G3 interchange |
+
+---
+
+## Severity Naming Convention
+
+Diff engine internal severities:
+- equal: no difference
+- critical: structural or critical field difference (red)
+- coordinate: numeric coordinate difference (subject to tolerance)
+- coordinate-z: Z-axis difference (same as coordinate currently)
+- minor: after tolerance — within major threshold (amber)
+- tolerance: after tolerance — within minor threshold (hidden)
+- added / removed: one-sided ops
+
+app.js maps these via decoType():
+- critical maps to major (CSS class suffix diff-bg-major)
+- coordinate / coordinate-z are reclassified by applyToleranceClassification
+  to minor, tolerance, or critical before decorations are applied
+
+---
+
+## Toolpath Segmentation Rules (Do Not Simplify)
+
+Tuned for Fusion 360 posts on Brother Speedio. Key behaviors to preserve:
+
+- G100 with T AND (X/Y or S or M03/M04) is the tool-change anchor for Brother.
+  A bare G100 without these qualifiers is not a tool call.
+- Preamble expansion absorbs inter-toolpath housekeeping lines (G28, G53, M05,
+  M09, M298, rapids, blanks) into the preceding segment so they don't appear
+  as orphaned lines between toolpaths.
+- Cutting move detection (G1/G2/G3 with axis values) is the stop condition for
+  backward preamble expansion.
+- The comment-pair anchor (blank + comment + comment) is the primary trigger,
+  not the G100. The G100 is associated forward within 20 lines.
+- Same-tool re-calls (no G100, just a new comment pair) are detected as toolpaths
+  with toolNumber inherited from the previous toolpath.
+- anchorLine is used for separator placement (the visible comment line).
+  startLine includes the expanded preamble and is used for line range logic only.
+
+---
 
 ## Visual Design
 
 - Dark theme, industrial aesthetic
-- Background: `#1a1a2e`
-- Panel borders: `#2a2a3e`
-- Text: `#e0e0e0`
+- Background: #1a1a2e, panels: #2a2a3e, text: #e0e0e0
 - Font: JetBrains Mono (Google Fonts CDN), fallback Consolas, monospace
 - No rounded corners. Functional, not decorative.
+- Line height: 20px — used in scrollToLine and display height math.
+  Do not change without updating both.
 
-### Diff Highlight Colors
+## Diff Highlight Colors
 
-|Classification         |Color                  |Notes                                    |
-|-----------------------|-----------------------|-----------------------------------------|
-|Major difference       |`#5c2626` deep red     |Large numeric or structural change       |
-|Minor difference       |`#4a3f20` amber        |Within major threshold                   |
-|Added line             |`#1a3a4a` dark teal    |Only in one file                         |
-|Removed line           |`#3d1f2f` burgundy     |Missing from one file                    |
-|**Critical difference**|`#7a3a00` bright orange|Always shown even in suppressed toolpaths|
-|Equal                  |none                   |                                         |
+| Classification | CSS class | Color |
+|---|---|---|
+| Critical | diff-bg-major | #5c2626 deep red |
+| Minor | diff-bg-minor | #4a3f20 amber |
+| Within tolerance | diff-bg-tolerance | subtle (see style.css) |
+| Added | diff-bg-added | #1a3a4a dark teal |
+| Removed | diff-bg-removed | #3d1f2f burgundy |
+| Token diff (inline) | token-diff | bright highlight on changed token only |
+| Disabled line | line-disabled | dimmed |
 
------
+---
 
-## What Not to Build
+## Things NOT to Build
 
-- No accept/review workflow
-- No back-plotter or toolpath visualization
-- No backend, no server, no npm, no build step
-- No automatic noise detection — the user controls what is noise via the
-  toolpath navigator checkboxes and tolerance settings
-- No fuzzy matching or AI-based diff
-
------
-
-## Notes on Extensibility
-
-- Critical difference rules should live in a single config object so new rule
-  types can be added without touching diff pipeline code
-- Toolpath boundary signals should be an array of detector functions so new
-  signal types (machine-specific) can be added later
-- Work offset extended formats (G154 Pn, G54.n, etc.) will be added later —
-  keep the work offset detector as its own function, not inline logic
+- Accept/review workflow (dropped)
+- Back-plotter / toolpath visualization (deferred indefinitely)
+- Automatic noise detection (user controls noise via toolpath checkboxes)
+- Fuzzy or AI-based diff
+- Backend, server, npm, or build step of any kind
