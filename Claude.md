@@ -48,8 +48,14 @@ Plain Node, no npm. Add a test for every new rule.
 - Token types: gCode, mCode, axis (X/Y/Z), rotary (A/B/C), arcParam (I/J/K),
   feed (F), spindle (S), tool (T), hOffset (H), dOffset (D), param (R/P/Q/L),
   macro (#), lineNumber (N), comment (paren and semicolon), blockDelete (/),
-  program (O number), other (any unrecognized letter, e.g. U/V/W)
+  program (O number), other (any unrecognized letter, e.g. U/V/W),
+  expr (word with expression value: X[#101+1], X#101)
+- Numbers: accepts 1.  .5  -.25  +1.  and a space after the letter (X 1.)
+- Macro statements: two letters in a row outside comments (IF, GOTO, WHILE,
+  SIN, ...) make the code part one macro token (isMacroStatement). GOTO10 is
+  never read as a program number.
 - Comment tokens carry kind: 'paren' or 'semi' (parenComments / semiComments arrays)
+- Paren comments end at the matching ')' (nested brackets allowed)
 - Tracks isBlank, isCommentOnly, blockDelete (leading whitespace allowed), raw text
 
 **Modal G-code state tracking** (`trackModalState`):
@@ -115,29 +121,45 @@ Lines with G54-G59 get workOffset = true.
 - After this step no op has type coordinate / coordinate-z
 - Sets op.alwaysShow on every critical / workoffset op
 
-**LCS engine**: Uint16Array DP table, standard backtrack
+**Line alignment** (`alignLines`), per matched toolpath:
+1. Identical lines at start and end are matched directly (fast path)
+2. Middle <= 4M cells (left x right): weighted LCS. Same text scores 2,
+   same fingerprint scores 1, so inserted lines line up exactly
+3. Bigger: Myers O(ND) diff on exact text, then on fingerprints (max 2000 edits)
+4. Last resort: pair lines in order — every line is still compared
+- Int32 tables (no overflow). Toolpath similarity on huge toolpaths uses a
+  count of shared line shapes instead of a full LCS.
+- 70,000-line toolpath: about 1.3 s, 0.5 GB
+
+**Pairing changed lines** (`classifyOps`): removed and added lines in the same
+gap are paired only if they are the same kind (share at least half their word
+letters, or both comment-only). Others stay as plain removed / added.
 
 **Stats** (`countStats`): counts critical (incl. workoffset), minor, added, removed.
 Not used by the UI — app.js counts only what is actually displayed.
 
 ### Editor (`editor.js`)
 
-**Custom single-layer line-div editor** (no CodeMirror — built from scratch):
-- Hidden textarea captures all input; display div renders styled line divs
+**Custom line-div editor** (no CodeMirror — built from scratch):
+- Hidden textarea holds the text and takes keyboard input (never clicks)
+- Virtual rendering: a row model (line / pad / sep rows) is rebuilt on change;
+  only rows in and near the visible area are drawn as divs
+- Clicks on the display are mapped to line + column by editor.js (row model,
+  measured character width), then the textarea selection is set
+- Current cursor line gets a subtle outline; typing/arrow keys keep it on screen
 - Each line div: gutter line number + syntax-highlighted content
-- Alignment padding lines (blank spacers to keep both panes line-aligned)
-- Toolpath separator rows inline in the display (with checkboxes)
+- Alignment padding rows (blank spacers to keep both panes line-aligned)
+- Toolpath separator rows inline in the display (clickable checkboxes)
 - Fully editable — textarea handles all keyboard input including Tab (2 spaces)
 - 300ms debounce on input before triggering diff
 
 **Syntax highlighting** (`syntaxHighlightLine`):
-- Applied via regex on each line's raw text
-- Colors: G-codes (blue), M-codes (purple), T (red), H/D (red), F (orange),
-  S (orange), X/Y (green), Z (teal), A/B/C (teal), I/J/K (cyan),
-  macros/# (magenta), comments (gray italic), N-numbers (dim)
-- Token diff highlighting: uses Unicode private-use sentinels (U+E000/E001)
-  inserted into the raw string before HTML escaping, marks changed tokens
-  with a token-diff span wrapper
+- Uses DiffEngine.parseGCodeLine tokens, so colors match what is compared
+  (nothing colored inside comments, decimal point included)
+- Classes: gcode-g, gcode-m, gcode-t, gcode-hd, gcode-f, gcode-s, gcode-xy,
+  gcode-z, gcode-abc, gcode-ijk, gcode-param, gcode-macro, gcode-comment-*,
+  gcode-line-number (colors in style.css)
+- Changed tokens wrapped in a token-diff span (character ranges from tokenDiffs)
 
 **Toolpath separator rows** (inline in editor display):
 - Rendered as special editor-line tp-separator divs at anchorLine position
@@ -164,7 +186,9 @@ Not used by the UI — app.js counts only what is actually displayed.
 
 **File I/O**: Open Left/Right buttons, Save Left/Right (browser download)
 
-**Scroll to line** (`scrollToLine`): accounts for alignment padding and separator rows
+**Scroll to line** (`scrollToLine`): uses the row model (padding and separator rows)
+
+**Row API**: getDisplayRow(side, line), getTotalRows(side) — used by the gutter
 
 ### App (`app.js`)
 
@@ -186,7 +210,8 @@ Not used by the UI — app.js counts only what is actually displayed.
 
 **Diff execution** (`runDiff`):
 - Splits text to lines, calls DiffEngine.computeSemanticDiff
-- Resets all per-toolpath state on each full re-diff (all shown, tolerance ON)
+- Keeps hide/TOL choices across re-diffs: toolpaths are matched by
+  side + type|name|opType|tool + occurrence count. New clears them; Swap clears them.
 - Calls applyDecorations
 
 **Decoration application** (`applyDecorations`):
@@ -203,8 +228,8 @@ Not used by the UI — app.js counts only what is actually displayed.
 - Updates status bar
 
 **Center diff gutter** (`updateDiffMarkers`):
-- Proportional colored tick marks for all visible diffs
-- Clickable: click anywhere to jump both editors to nearest diff at that position
+- Tick marks for the same diffs F7 visits, placed by display row (matches scroll position)
+- Clickable: jumps both editors to the diff nearest the clicked row
 
 **Diff navigation**: F7 / Shift+F7 / Prev/Next buttons, skips tolerance and
 disabled-toolpath ops
@@ -260,7 +285,8 @@ This list will grow — add new rules to classifyTokens only.
 | Feed rate | critical | F value difference |
 | Missing axis | critical | Axis or I/J/K present on one side only |
 | Comment content | critical | Comment text difference (after ignore rules) |
-| Macros | critical | Any # token difference |
+| Macros | critical | Any # token or macro statement (IF/GOTO/...) difference |
+| Expression words | critical | X[#101+1] / X#101 text difference |
 | Params / other words | critical | R/P/Q/L or unrecognized letter difference |
 | Block delete | critical | / on one side only (unless Ignore block delete) |
 | Coordinate > major | critical | Max delta beyond majorThreshold |
