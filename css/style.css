@@ -419,8 +419,8 @@ html, body {
   margin: 0;
   border: none;
   resize: none;
-  z-index: 2;
-  cursor: text;
+  z-index: 0;
+  pointer-events: none; /* clicks go to the display; editor.js maps them */
   white-space: pre;
   tab-size: 4;
   overflow: hidden; /* wrapper handles scrolling */
@@ -430,9 +430,23 @@ html, body {
 .editor-display {
   position: relative;
   z-index: 1;
-  pointer-events: none;
   min-height: 100%;
+  cursor: text;
 }
+
+/* Only the visible rows are drawn, inside this box */
+.editor-window {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
+.editor-line.cursor-line .line-content {
+  box-shadow: inset 0 0 0 1px #3a3d41;
+}
+.editor-line.cursor-line .line-num { color: #c6c6c6; }
+
+.tp-separator { cursor: pointer; }
 
 .editor-line {
   display: flex;
@@ -769,10 +783,10 @@ input[type="checkbox"]:focus-visible {
 }
 
 /* ===== Empty state placeholder ===== */
-.editor-display:empty {
+.editor-display.editor-empty {
   position: relative;
 }
-.editor-display:empty::before {
+.editor-display.editor-empty::before {
   content: 'Open or drag a file here';
   position: absolute;
   top: 50%;

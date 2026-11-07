@@ -120,8 +120,11 @@ N120 M30`;
     bindKeyboard();
 
     // Restore filenames
-    const lf = localStorage.getItem('gcode-compare-left-filename');
-    const rf = localStorage.getItem('gcode-compare-right-filename');
+    let lf = null, rf = null;
+    try {
+      lf = localStorage.getItem('gcode-compare-left-filename');
+      rf = localStorage.getItem('gcode-compare-right-filename');
+    } catch (e) { /* storage blocked */ }
     if (lf) Editor.setFilename('left', lf);
     if (rf) Editor.setFilename('right', rf);
   }
@@ -146,8 +149,10 @@ N120 M30`;
   }
 
   function saveSettings() {
-    localStorage.setItem('gcode-compare-settings-version', String(SETTINGS_VERSION));
-    localStorage.setItem('gcode-compare-settings', JSON.stringify(settings));
+    try {
+      localStorage.setItem('gcode-compare-settings-version', String(SETTINGS_VERSION));
+      localStorage.setItem('gcode-compare-settings', JSON.stringify(settings));
+    } catch (e) { /* storage blocked */ }
   }
 
   function applySettingsToUI() {
@@ -193,31 +198,20 @@ N120 M30`;
 
     document.getElementById('settings-toggle').addEventListener('click', toggleSettings);
 
-    // Clickable diff gutter — click anywhere to jump to that position in both editors
+    // Clickable diff gutter — jump both editors to the diff nearest the click
     document.getElementById('diff-markers').addEventListener('click', (e) => {
-      if (currentDiff.length === 0) return;
-      const container = e.currentTarget;
-      const rect = container.getBoundingClientRect();
+      if (diffPositions.length === 0) return;
+      const rect = e.currentTarget.getBoundingClientRect();
       const fraction = (e.clientY - rect.top) / rect.height;
-      const targetIdx = Math.round(fraction * (currentDiff.length - 1));
-
-      // Find the nearest non-equal op to where the user clicked
-      let best = -1;
-      let bestDist = Infinity;
-      for (let i = 0; i < currentDiff.length; i++) {
-        const op = currentDiff[i];
-        const et = effectiveType(op);
-        if (et === 'equal' || et === 'tolerance') continue;
-        if (isOpDisabled(op) && !op.alwaysShow) continue;
-        const dist = Math.abs(i - targetIdx);
-        if (dist < bestDist) { bestDist = dist; best = i; }
+      const targetRow = fraction * Math.max(1, Editor.getTotalRows('left'));
+      let best = null, bestDist = Infinity;
+      for (const i of diffPositions) {
+        const dist = Math.abs(opRow(currentDiff[i]) - targetRow);
+        if (dist < bestDist) { bestDist = dist; best = currentDiff[i]; }
       }
-
-      // Fall back to absolute position if no diff nearby (clicking between markers)
-      const op = currentDiff[best >= 0 ? best : targetIdx] || currentDiff[targetIdx];
-      if (!op) return;
-      if (op.leftIdx !== undefined) Editor.scrollToLine('left', op.leftIdx);
-      if (op.rightIdx !== undefined) Editor.scrollToLine('right', op.rightIdx);
+      if (!best) return;
+      if (best.leftIdx !== undefined) Editor.scrollToLine('left', best.leftIdx);
+      if (best.rightIdx !== undefined) Editor.scrollToLine('right', best.rightIdx);
     });
   }
 
@@ -376,6 +370,39 @@ N120 M30`;
     return false;
   }
 
+  // === Remembering per-toolpath choices across re-compares ===
+  // A toolpath is identified by side + name/op/tool + how many times that
+  // label appeared before it, so choices survive edits and re-posts.
+  function toolpathKeys(toolpaths, prefix) {
+    const seen = {};
+    const map = new Map(); // id string -> key
+    for (const tp of toolpaths) {
+      const label = tp.type + '|' + (tp.name || '') + '|' + (tp.opType || '') + '|' + tp.toolNumber;
+      seen[label] = (seen[label] || 0) + 1;
+      map.set(prefix + tp.id, prefix + label + '#' + seen[label]);
+    }
+    return map;
+  }
+
+  function allKeys(toolpaths) {
+    const m = toolpathKeys(toolpaths.left, '');
+    for (const [k, v] of toolpathKeys(toolpaths.right, 'R')) m.set(k, v);
+    return m;
+  }
+
+  function idsToKeys(ids, toolpaths) {
+    const m = allKeys(toolpaths);
+    const out = new Set();
+    for (const id of ids) if (m.has(id)) out.add(m.get(id));
+    return out;
+  }
+
+  function keysToIds(keys, toolpaths) {
+    const out = new Set();
+    for (const [id, key] of allKeys(toolpaths)) if (keys.has(key)) out.add(id);
+    return out;
+  }
+
   // === Core diff execution ===
   function runDiff() {
     const leftText = Editor.getValue('left');
@@ -398,13 +425,16 @@ N120 M30`;
       majorThreshold: settings.majorThreshold
     });
     currentDiff = diffResult.ops;
+    const prevToolpaths = currentToolpaths;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
     currentTpMatches = diffResult.tpMatches || [];
 
-    // Reset toolpath states
-    disabledToolpathIds.clear();
-    toleranceOffIds.clear();
-    Editor.setTolAllActive(true);
+    // Carry hide/TOL choices over to the new toolpath list (matched by name)
+    const prevDisabled = idsToKeys(disabledToolpathIds, prevToolpaths);
+    const prevTolOff = idsToKeys(toleranceOffIds, prevToolpaths);
+    disabledToolpathIds = keysToIds(prevDisabled, currentToolpaths);
+    toleranceOffIds = keysToIds(prevTolOff, currentToolpaths);
+    Editor.setTolAllActive(toleranceOffIds.size === 0);
 
     // Apply decorations and update UI
     applyDecorations();
@@ -621,25 +651,27 @@ N120 M30`;
     document.getElementById('diff-markers').innerHTML = '';
   }
 
+  /** Display row of an op (both panes have the same row count). */
+  function opRow(op) {
+    return op.leftIdx !== undefined ? Editor.getDisplayRow('left', op.leftIdx)
+                                    : Editor.getDisplayRow('right', op.rightIdx);
+  }
+
   function updateDiffMarkers() {
     const container = document.getElementById('diff-markers');
     const height = container.clientHeight || 400;
-    const total = currentDiff.length;
-    if (total === 0) { container.innerHTML = ''; return; }
+    const totalRows = Editor.getTotalRows('left');
+    if (diffPositions.length === 0 || totalRows === 0) { container.innerHTML = ''; return; }
 
     let html = '';
     const seen = new Set();
 
-    for (let i = 0; i < currentDiff.length; i++) {
+    // Same set of diffs as F7 navigation, placed by their real position
+    for (const i of diffPositions) {
       const op = currentDiff[i];
       const etype = effectiveType(op);
-      if (etype === 'equal' || etype === 'tolerance') continue;
-      // Filter disabled toolpath ops from gutter, but let must-surface diffs through
-      const disabled = isOpDisabled(op);
-      if (disabled && !op.alwaysShow) continue;
-
       const dt = op.workOffset ? 'workoffset' : decoType(etype);
-      const top = Math.round((i / total) * height);
+      const top = Math.round((opRow(op) / totalRows) * height);
       const key = `${top}-${dt}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -714,6 +746,11 @@ N120 M30`;
     const rightText = Editor.getValue('right');
     const leftName = Editor.getFilename('left');
     const rightName = Editor.getFilename('right');
+
+    // Sides flip, so per-toolpath choices no longer apply
+    disabledToolpathIds.clear();
+    toleranceOffIds.clear();
+    currentToolpaths = { left: [], right: [] };
 
     Editor.setValue('left', rightText);
     Editor.setValue('right', leftText);

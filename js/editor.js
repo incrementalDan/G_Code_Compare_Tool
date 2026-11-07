@@ -1,10 +1,17 @@
 /**
  * Editor Module
- * Single-layer line-div editor with syntax highlighting and diff decorations.
- * No overlapping scroll layers — everything renders in one DOM tree per pane.
+ * Line-div editor with syntax highlighting and diff decorations.
+ *
+ * Only the rows on screen are drawn (virtual rendering), so big files stay fast.
+ * A hidden textarea holds the text and takes keyboard input. Clicks are mapped
+ * to a line and column by this module, because the display has extra rows
+ * (alignment padding, toolpath separators) the textarea knows nothing about.
  */
 
 const Editor = (() => {
+  const LINE_HEIGHT = 20;   // must match --line-height in style.css
+  const OVERSCAN = 40;      // extra rows drawn above/below the visible area
+
   let leftState = null;
   let rightState = null;
   let onChangeCallback = null;
@@ -19,11 +26,10 @@ const Editor = (() => {
   }
 
   function createEditor(container, side) {
-    // Main scrollable wrapper
     const wrapper = document.createElement('div');
     wrapper.className = 'editor-wrapper';
 
-    // Hidden textarea for actual editing (captures all input)
+    // Hidden textarea: holds the text and receives typing. Never receives clicks.
     const textarea = document.createElement('textarea');
     textarea.className = 'editor-input';
     textarea.spellcheck = false;
@@ -31,18 +37,19 @@ const Editor = (() => {
     textarea.setAttribute('autocapitalize', 'off');
     textarea.wrap = 'off';
 
-    // Rendered display area (line divs with gutter + content)
+    // Display: full-height box; only the visible window of rows is drawn inside.
     const display = document.createElement('div');
     display.className = 'editor-display';
+    const windowEl = document.createElement('div');
+    windowEl.className = 'editor-window';
+    display.appendChild(windowEl);
 
-    // Toolpath header bar (shows current toolpath, click to toggle dropdown)
     const tpHeader = document.createElement('div');
     tpHeader.className = 'tp-header-bar';
     tpHeader.innerHTML = '<span class="tp-header-label"></span>' +
       '<button class="tp-tol-all-btn active" title="Toggle tolerance filter for all toolpaths">TOL</button>' +
       '<span class="tp-header-arrow">&#9660;</span>';
 
-    // Toolpath dropdown overlay (full list of all toolpaths)
     const tpDropdown = document.createElement('div');
     tpDropdown.className = 'tp-dropdown';
 
@@ -57,63 +64,48 @@ const Editor = (() => {
       wrapper,
       textarea,
       display,
+      windowEl,
       tpHeader,
       tpDropdown,
       content: '',
+      lines: [''],
+      rows: [],             // [{kind:'line'|'pad'|'sep', line}]
+      lineToRow: [],        // line index -> row index
+      renderedRange: null,  // [first, last] rows currently drawn
+      cursorLine: -1,
       decorations: {},
+      disabledLines: new Set(),
       filename: 'untitled',
       alignmentPadding: {},
       toolpathSeparators: {},
-      separatorPositions: [], // [{id, label, disabled, offsetTop}] cached after render
+      separatorPositions: [], // [{id, label, disabled, offsetTop}]
       dropdownOpen: false,
       onSeparatorClick: null,
       onSeparatorToggle: null,
       onToleranceToggle: null,
       onToleranceToggleAll: null,
-      onDropdownToggle: null // callback to sync dropdown state across sides
+      onDropdownToggle: null
     };
 
-    // Focus textarea on click anywhere in the editor — but not on separators
+    // Click in the code: place the cursor on the clicked line/column.
     display.addEventListener('mousedown', (e) => {
       if (e.target.closest('.tp-separator')) return;
-
+      e.preventDefault();
       const rect = display.getBoundingClientRect();
-      const scrollTop = wrapper.scrollTop;
-      const y = e.clientY - rect.top + scrollTop;
-      const lineHeight = 20;
-      const clickedLine = Math.floor(y / lineHeight);
-      const lines = state.content.split('\n');
-
-      let actualLine = 0;
-      let displayLine = 0;
-      for (let i = 0; i < lines.length; i++) {
-        // Order must match render(): padding first, then separator, then content
-        const padding = state.alignmentPadding[i] || 0;
-        displayLine += padding;
-        if (state.toolpathSeparators[i]) displayLine++;
-        if (displayLine === clickedLine || (displayLine <= clickedLine && clickedLine < displayLine + 1)) {
-          actualLine = i;
-          break;
-        }
-        displayLine += 1;
-        if (displayLine > clickedLine) {
-          actualLine = i;
-          break;
-        }
-        actualLine = i;
-      }
-
+      const row = Math.max(0, Math.floor((e.clientY - rect.top) / LINE_HEIGHT));
+      const line = lineForRow(state, row);
+      const col = columnAt(state, e.clientX);
+      const lineText = state.lines[line] || '';
       let pos = 0;
-      for (let i = 0; i < actualLine && i < lines.length; i++) {
-        pos += lines[i].length + 1;
-      }
-      setTimeout(() => {
-        textarea.focus();
-        textarea.selectionStart = textarea.selectionEnd = Math.min(pos, textarea.value.length);
-      }, 0);
+      for (let i = 0; i < line; i++) pos += state.lines[i].length + 1;
+      pos += Math.min(col, lineText.length);
+      textarea.focus({ preventScroll: true });
+      textarea.selectionStart = textarea.selectionEnd = Math.min(pos, textarea.value.length);
+      setCursorLine(state, line);
+      updateCursorPos(textarea);
     });
 
-    // Event delegation for separator clicks and checkbox toggles (bound once, not per-render)
+    // Event delegation for separator rows (bound once)
     display.addEventListener('click', (e) => {
       const sep = e.target.closest('.tp-separator');
       if (!sep) return;
@@ -131,27 +123,23 @@ const Editor = (() => {
       }
     });
 
-    // Toolpath header click toggles dropdown (but not when clicking the TOL button)
     tpHeader.addEventListener('click', (e) => {
       if (e.target.classList.contains('tp-tol-all-btn')) return;
       const newState = !state.dropdownOpen;
       setDropdownOpen(state, newState);
       if (state.onDropdownToggle) state.onDropdownToggle(newState);
     });
-    // Master tolerance toggle button
     tpHeader.querySelector('.tp-tol-all-btn').addEventListener('click', (e) => {
       e.stopPropagation();
       const isActive = !e.target.classList.contains('active');
       if (state.onToleranceToggleAll) state.onToleranceToggleAll(isActive);
     });
 
-    // Event delegation for dropdown items
     tpDropdown.addEventListener('click', (e) => {
       const item = e.target.closest('.tp-dropdown-item');
       if (!item) return;
       if (e.target.classList.contains('tp-sep-cb') || e.target.classList.contains('tp-tol-cb')) return;
       if (state.onSeparatorClick) state.onSeparatorClick(item.dataset.tpId);
-      // Close dropdown after navigation
       setDropdownOpen(state, false);
       if (state.onDropdownToggle) state.onDropdownToggle(false);
     });
@@ -166,34 +154,30 @@ const Editor = (() => {
       }
     });
 
-    // Sync scrolling from wrapper
     wrapper.addEventListener('scroll', () => {
-      textarea.scrollTop = wrapper.scrollTop;
-      textarea.scrollLeft = wrapper.scrollLeft;
-      scheduleUpdateHeader(state);
+      // Keep the (invisible) textarea over the visible area
+      textarea.style.top = wrapper.scrollTop + 'px';
+      scheduleWindow(state);
     });
 
-    // Input handling
     let debounceTimer = null;
     textarea.addEventListener('input', () => {
       state.content = textarea.value;
       render(state);
+      followCursor(state);
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         if (onChangeCallback) onChangeCallback();
       }, 300);
     });
 
-    // Cursor tracking (debounced to avoid O(n) split on every event)
     let cursorTimer = null;
     const debouncedCursor = () => {
       clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(() => updateCursorPos(textarea), 50);
+      cursorTimer = setTimeout(() => { updateCursorPos(textarea); followCursor(state); }, 50);
     };
-    textarea.addEventListener('click', debouncedCursor);
     textarea.addEventListener('keyup', debouncedCursor);
 
-    // Tab support
     textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Tab') {
         e.preventDefault();
@@ -206,11 +190,14 @@ const Editor = (() => {
       }
     });
 
-    // Drag and drop
     setupDragDrop(container, side);
-
+    render(state);
     return state;
   }
+
+  // =====================================================
+  // Cursor helpers
+  // =====================================================
 
   function updateCursorPos(textarea) {
     const val = textarea.value.substring(0, textarea.selectionStart);
@@ -219,21 +206,60 @@ const Editor = (() => {
     if (el) el.textContent = `Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
   }
 
+  /** The text line shown at a display row (padding/separator rows map to the next line). */
+  function lineForRow(state, row) {
+    const rows = state.rows;
+    if (!rows.length) return 0;
+    for (let r = Math.min(row, rows.length - 1); r < rows.length; r++) {
+      if (rows[r].kind === 'line') return rows[r].line;
+    }
+    return state.lines.length - 1;
+  }
+
+  let charWidthCache = 0;
+  function charWidth(state) {
+    if (charWidthCache) return charWidthCache;
+    const probe = document.createElement('span');
+    probe.className = 'line-content';
+    probe.style.position = 'absolute';
+    probe.style.visibility = 'hidden';
+    probe.textContent = '0'.repeat(100);
+    state.display.appendChild(probe);
+    charWidthCache = probe.getBoundingClientRect().width / 100 || 7.8;
+    probe.remove();
+    return charWidthCache;
+  }
+
+  function columnAt(state, clientX) {
+    const content = state.windowEl.querySelector('.line-content');
+    if (!content) return 0;
+    const left = content.getBoundingClientRect().left + parseFloat(getComputedStyle(content).paddingLeft || 0);
+    return Math.max(0, Math.round((clientX - left) / charWidth(state)));
+  }
+
+  function setCursorLine(state, line) {
+    if (state.cursorLine === line) return;
+    state.cursorLine = line;
+    renderWindow(state, true);
+  }
+
+  /** After typing or arrow keys, highlight the cursor line and keep it on screen. */
+  function followCursor(state) {
+    const ta = state.textarea;
+    const line = ta.value.substring(0, ta.selectionStart).split('\n').length - 1;
+    setCursorLine(state, line);
+    if (document.activeElement !== ta) return;
+    const row = state.lineToRow[line];
+    if (row === undefined) return;
+    const top = row * LINE_HEIGHT;
+    const w = state.wrapper;
+    if (top < w.scrollTop) w.scrollTop = top;
+    else if (top + LINE_HEIGHT > w.scrollTop + w.clientHeight) w.scrollTop = top + LINE_HEIGHT - w.clientHeight;
+  }
+
   // =====================================================
   // Toolpath Header Bar & Dropdown
   // =====================================================
-
-  let headerRafId = null;
-  let pendingHeaderStates = new Set();
-  function scheduleUpdateHeader(state) {
-    pendingHeaderStates.add(state);
-    if (headerRafId) return;
-    headerRafId = requestAnimationFrame(() => {
-      headerRafId = null;
-      for (const s of pendingHeaderStates) updateCurrentHeader(s);
-      pendingHeaderStates.clear();
-    });
-  }
 
   function updateCurrentHeader(state) {
     const label = state.tpHeader.querySelector('.tp-header-label');
@@ -245,20 +271,12 @@ const Editor = (() => {
     state.tpHeader.classList.remove('tp-header-empty');
 
     const scrollTop = state.wrapper.scrollTop;
-
-    // Find the last separator that is at or above the current scroll position
     let current = state.separatorPositions[0];
     for (const sep of state.separatorPositions) {
-      if (sep.offsetTop <= scrollTop + 2) {
-        current = sep;
-      } else {
-        break;
-      }
+      if (sep.offsetTop <= scrollTop + 2) current = sep;
+      else break;
     }
-
-    if (current) {
-      label.innerHTML = buildLabelHtml(current, current.placeholder);
-    }
+    if (current) label.innerHTML = buildLabelHtml(current, current.placeholder);
   }
 
   function setDropdownOpen(state, open) {
@@ -274,7 +292,6 @@ const Editor = (() => {
       state.tpDropdown.innerHTML = '';
       return;
     }
-
     let html = '';
     for (let i = 0; i < state.separatorPositions.length; i++) {
       const sep = state.separatorPositions[i];
@@ -308,80 +325,126 @@ const Editor = (() => {
   // =====================================================
 
   function escapeHtml(text) {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  /**
+   * Rebuild the row model (cheap: no HTML) and draw the visible window.
+   * Row order per line must stay: padding rows, then separator, then the line.
+   */
   function render(state) {
     const lines = state.content.split('\n');
-    let html = '';
-    let sepCount = 0;
+    state.lines = lines;
+    const rows = [];
+    const lineToRow = new Array(lines.length);
+    let maxLen = 0;
 
     for (let i = 0; i < lines.length; i++) {
-      // Insert alignment padding lines FIRST (keeps both panes aligned)
       const padding = state.alignmentPadding[i] || 0;
-      for (let p = 0; p < padding; p++) {
-        html += `<div class="editor-line padding-line"><span class="line-num"></span><span class="line-content">&nbsp;</span></div>`;
-      }
+      for (let p = 0; p < padding; p++) rows.push({ kind: 'pad', line: i });
+      if (state.toolpathSeparators[i]) rows.push({ kind: 'sep', line: i });
+      lineToRow[i] = rows.length;
+      rows.push({ kind: 'line', line: i });
+      if (lines[i].length > maxLen) maxLen = lines[i].length;
+    }
+    // Trailing padding (keyed at lines.length)
+    const trailing = state.alignmentPadding[lines.length] || 0;
+    for (let p = 0; p < trailing; p++) rows.push({ kind: 'pad', line: lines.length });
 
-      // Insert toolpath separator AFTER padding (so it appears at the aligned position)
-      const sep = state.toolpathSeparators[i];
-      if (sep) {
-        sepCount++;
-        const checkedAttr = sep.disabled ? '' : ' checked';
-        const tolCheckedAttr = sep.toleranceEnabled ? ' checked' : '';
-        const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
-        const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
-        html += `<div class="editor-line tp-separator${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
-          `<span class="line-num"></span>` +
-          `<span class="line-content tp-sep-content">` +
-          `<input type="checkbox" class="tp-sep-cb"${checkedAttr} title="Show/hide this toolpath">` +
-          `<input type="checkbox" class="tp-tol-cb"${tolCheckedAttr} title="Tolerance filter"> ` +
-          buildLabelHtml(sep, sep.placeholder) +
-          `</span></div>`;
-      }
+    state.rows = rows;
+    state.lineToRow = lineToRow;
+    state.display.style.height = (rows.length * LINE_HEIGHT) + 'px';
+    state.display.style.minWidth = `calc(${maxLen}ch + 90px)`;
+    state.display.classList.toggle('editor-empty', state.content === '');
 
-      const isDisabled = state.disabledLines && state.disabledLines.has(i);
-      const deco = state.decorations[i];
-      const type = isDisabled ? null : (deco ? deco.type : null);
-      const tokenDiffs = (!isDisabled && deco) ? deco.tokenDiffs : null;
-      const bgClass = type ? `diff-bg-${type}` : '';
-      const disabledClass = isDisabled ? ' line-disabled' : '';
-      const highlighted = syntaxHighlightLine(lines[i], tokenDiffs, state.side);
-      html += `<div class="editor-line ${bgClass}${disabledClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
+    state.separatorPositions = [];
+    for (let r = 0; r < rows.length; r++) {
+      if (rows[r].kind !== 'sep') continue;
+      const sep = state.toolpathSeparators[rows[r].line];
+      state.separatorPositions.push({
+        id: sep.id,
+        label: sep.label || '',
+        labelParts: sep.labelParts || null,
+        placeholder: !!sep.placeholder,
+        disabled: !!sep.disabled,
+        toleranceEnabled: !!sep.toleranceEnabled,
+        offsetTop: r * LINE_HEIGHT
+      });
     }
 
-    state.display.innerHTML = html;
-
-    // Cache separator positions for header/dropdown updates
-    state.separatorPositions = [];
-    state.display.querySelectorAll('.tp-separator').forEach(el => {
-      const tpId = el.dataset.tpId;
-      const sep = Object.values(state.toolpathSeparators).find(s => s.id === tpId);
-      state.separatorPositions.push({
-        id: tpId,
-        label: sep ? sep.label : '',
-        labelParts: sep ? sep.labelParts : null,
-        placeholder: sep ? !!sep.placeholder : false,
-        disabled: sep ? sep.disabled : false,
-        toleranceEnabled: sep ? !!sep.toleranceEnabled : false,
-        offsetTop: el.offsetTop
-      });
-    });
-
-    // Ensure the display is tall enough
-    const lineHeight = 20;
-    const padTotal = Object.values(state.alignmentPadding).reduce((a, b) => a + b, 0);
-    const totalDisplayLines = lines.length + padTotal + sepCount;
-    state.display.style.minHeight = (totalDisplayLines * lineHeight) + 'px';
-
-    // Update header and dropdown after render
+    renderWindow(state, true);
     rebuildDropdown(state);
     updateCurrentHeader(state);
   }
 
-  /**
-   * Extract character ranges from tokenDiffs for a given side.
-   */
+  const pendingWindows = new Set();
+  let windowRafId = null;
+  function scheduleWindow(state) {
+    pendingWindows.add(state);
+    if (windowRafId) return;
+    windowRafId = requestAnimationFrame(() => {
+      windowRafId = null;
+      for (const s of pendingWindows) { renderWindow(s, false); updateCurrentHeader(s); }
+      pendingWindows.clear();
+    });
+  }
+
+  /** Draw only the rows in (and near) the visible area. */
+  function renderWindow(state, force) {
+    if (state.content === '' && !Object.keys(state.alignmentPadding).length) {
+      state.windowEl.innerHTML = '';
+      state.renderedRange = null;
+      return;
+    }
+    const rows = state.rows;
+    const view = state.wrapper.clientHeight || 800;
+    const first = Math.max(0, Math.floor(state.wrapper.scrollTop / LINE_HEIGHT) - OVERSCAN);
+    const last = Math.min(rows.length - 1, first + Math.ceil(view / LINE_HEIGHT) + 2 * OVERSCAN);
+
+    // Skip redraw while the needed rows are already drawn
+    const r = state.renderedRange;
+    if (!force && r && first >= r[0] && last <= r[1]) return;
+    const drawFirst = Math.max(0, first - OVERSCAN);
+    const drawLast = Math.min(rows.length - 1, last + OVERSCAN);
+    state.renderedRange = [drawFirst, drawLast];
+
+    let html = '';
+    for (let i = drawFirst; i <= drawLast; i++) html += rowHtml(state, rows[i]);
+    state.windowEl.style.top = (drawFirst * LINE_HEIGHT) + 'px';
+    state.windowEl.innerHTML = html;
+  }
+
+  function rowHtml(state, row) {
+    if (row.kind === 'pad') {
+      return `<div class="editor-line padding-line"><span class="line-num"></span><span class="line-content">&nbsp;</span></div>`;
+    }
+    if (row.kind === 'sep') {
+      const sep = state.toolpathSeparators[row.line];
+      const checkedAttr = sep.disabled ? '' : ' checked';
+      const tolCheckedAttr = sep.toleranceEnabled ? ' checked' : '';
+      const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+      const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
+      return `<div class="editor-line tp-separator${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+        `<span class="line-num"></span>` +
+        `<span class="line-content tp-sep-content">` +
+        `<input type="checkbox" class="tp-sep-cb"${checkedAttr} title="Show/hide this toolpath">` +
+        `<input type="checkbox" class="tp-tol-cb"${tolCheckedAttr} title="Tolerance filter"> ` +
+        buildLabelHtml(sep, sep.placeholder) +
+        `</span></div>`;
+    }
+    const i = row.line;
+    const isDisabled = state.disabledLines && state.disabledLines.has(i);
+    const deco = state.decorations[i];
+    const type = isDisabled ? null : (deco ? deco.type : null);
+    const tokenDiffs = (!isDisabled && deco) ? deco.tokenDiffs : null;
+    const bgClass = type ? ` diff-bg-${type}` : '';
+    const disabledClass = isDisabled ? ' line-disabled' : '';
+    const cursorClass = i === state.cursorLine ? ' cursor-line' : '';
+    const highlighted = syntaxHighlightLine(state.lines[i], tokenDiffs, state.side);
+    return `<div class="editor-line${bgClass}${disabledClass}${cursorClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
+  }
+
+  /** Character ranges of changed tokens for one side. */
   function extractDiffRanges(tokenDiffs, side) {
     if (!tokenDiffs || !tokenDiffs.length) return [];
     const ranges = [];
@@ -390,79 +453,73 @@ const Editor = (() => {
       const tokens = td[key];
       if (!tokens) continue;
       for (const t of tokens) {
-        if (t.start !== undefined && t.end !== undefined) {
-          ranges.push({ start: t.start, end: t.end });
-        }
+        if (t.start !== undefined && t.end !== undefined) ranges.push({ start: t.start, end: t.end });
       }
     }
-    ranges.sort((a, b) => a.start - b.start);
-    const merged = [];
-    for (const r of ranges) {
-      if (merged.length > 0 && r.start <= merged[merged.length - 1].end) {
-        merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, r.end);
-      } else {
-        merged.push({ start: r.start, end: r.end });
-      }
-    }
-    return merged;
+    return ranges;
   }
 
+  const TOKEN_CLASS = {
+    gCode: 'gcode-g', mCode: 'gcode-m', tool: 'gcode-t', hOffset: 'gcode-hd', dOffset: 'gcode-hd',
+    feed: 'gcode-f', spindle: 'gcode-s', arcParam: 'gcode-ijk', rotary: 'gcode-abc',
+    param: 'gcode-param', other: 'gcode-param', blockDelete: 'gcode-param',
+    macro: 'gcode-macro', expr: 'gcode-macro',
+    lineNumber: 'gcode-line-number', program: 'gcode-line-number'
+  };
+
+  function tokenClass(t) {
+    if (t.type === 'axis') return t.axis === 'Z' ? 'gcode-z' : 'gcode-xy';
+    if (t.type === 'comment') return t.kind === 'semi' ? 'gcode-comment-semi' : 'gcode-comment-paren';
+    return TOKEN_CLASS[t.type] || '';
+  }
+
+  /**
+   * Color a line using the diff engine's own parser, so colors always match
+   * what is compared (no coloring inside comments, decimals included).
+   */
   function syntaxHighlightLine(line, tokenDiffs, side) {
     if (!line) return '';
-
-    let s = line;
-    if (tokenDiffs && side) {
-      const ranges = extractDiffRanges(tokenDiffs, side);
-      if (ranges.length > 0) {
-        for (let r = ranges.length - 1; r >= 0; r--) {
-          const { start, end } = ranges[r];
-          const safeEnd = Math.min(end, s.length);
-          const safeStart = Math.min(start, s.length);
-          s = s.slice(0, safeEnd) + '\uE001' + s.slice(safeEnd);
-          s = s.slice(0, safeStart) + '\uE000' + s.slice(safeStart);
-        }
-      }
+    const len = line.length;
+    const cls = new Array(len).fill('');
+    const diff = new Uint8Array(len);
+    for (const t of DiffEngine.parseGCodeLine(line).tokens) {
+      const c = tokenClass(t);
+      for (let p = t.start; p < t.end && p < len; p++) cls[p] = c;
+    }
+    for (const r of extractDiffRanges(tokenDiffs, side)) {
+      for (let p = r.start; p < r.end && p < len; p++) diff[p] = 1;
     }
 
-    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    s = s.replace(/(\([^)]*\))/g, '<span class="gcode-comment-paren">$1</span>');
-    s = s.replace(/(;.*)$/, '<span class="gcode-comment-semi">$1</span>');
-    s = s.replace(/\b(N\d+)\b/gi, '<span class="gcode-line-number">$1</span>');
-    s = s.replace(/(#\d+)/g, '<span class="gcode-macro">$1</span>');
-    s = s.replace(/\b(G\d+\.?\d*)\b/gi, '<span class="gcode-g">$1</span>');
-    s = s.replace(/\b(M\d+\.?\d*)\b/gi, '<span class="gcode-m">$1</span>');
-    s = s.replace(/\b(T\d+)\b/gi, '<span class="gcode-t">$1</span>');
-    s = s.replace(/\b([HD]\d+)\b/gi, '<span class="gcode-hd">$1</span>');
-    s = s.replace(/\b(F-?\d+\.?\d*)\b/gi, '<span class="gcode-f">$1</span>');
-    s = s.replace(/\b(S\d+\.?\d*)\b/gi, '<span class="gcode-s">$1</span>');
-    s = s.replace(/\b([XY]-?\d+\.?\d*)\b/gi, '<span class="gcode-xy">$1</span>');
-    s = s.replace(/\b(Z-?\d+\.?\d*)\b/gi, '<span class="gcode-z">$1</span>');
-    s = s.replace(/\b([ABC]-?\d+\.?\d*)\b/gi, '<span class="gcode-abc">$1</span>');
-    s = s.replace(/\b([IJK]-?\d+\.?\d*)\b/gi, '<span class="gcode-ijk">$1</span>');
-    s = s.replace(/\b([RPQL]-?\d+\.?\d*)\b/gi, '<span class="gcode-param">$1</span>');
-
-    s = s.replace(/\uE000/g, '<span class="token-diff">');
-    s = s.replace(/\uE001/g, '</span>');
-
-    return s;
+    let out = '';
+    let p = 0;
+    while (p < len) {
+      let q = p + 1;
+      while (q < len && cls[q] === cls[p] && diff[q] === diff[p]) q++;
+      let text = escapeHtml(line.substring(p, q));
+      if (cls[p]) text = `<span class="${cls[p]}">${text}</span>`;
+      if (diff[p]) text = `<span class="token-diff">${text}</span>`;
+      out += text;
+      p = q;
+    }
+    return out;
   }
+
+  // =====================================================
+  // Scrolling, drag and drop, file I/O
+  // =====================================================
 
   function setupSyncScroll() {
     if (!leftState || !rightState) return;
-
-    leftState.wrapper.addEventListener('scroll', () => {
-      if (!syncScrollEnabled || isScrolling) return;
-      isScrolling = true;
-      rightState.wrapper.scrollTop = leftState.wrapper.scrollTop;
-      requestAnimationFrame(() => { isScrolling = false; });
-    });
-
-    rightState.wrapper.addEventListener('scroll', () => {
-      if (!syncScrollEnabled || isScrolling) return;
-      isScrolling = true;
-      leftState.wrapper.scrollTop = rightState.wrapper.scrollTop;
-      requestAnimationFrame(() => { isScrolling = false; });
-    });
+    const link = (from, to) => {
+      from.wrapper.addEventListener('scroll', () => {
+        if (!syncScrollEnabled || isScrolling) return;
+        isScrolling = true;
+        to.wrapper.scrollTop = from.wrapper.scrollTop;
+        requestAnimationFrame(() => { isScrolling = false; });
+      });
+    };
+    link(leftState, rightState);
+    link(rightState, leftState);
   }
 
   function setSyncScroll(enabled) {
@@ -475,20 +532,16 @@ const Editor = (() => {
       e.stopPropagation();
       container.classList.add('drag-over');
     });
-
     container.addEventListener('dragleave', (e) => {
       e.preventDefault();
       container.classList.remove('drag-over');
     });
-
     container.addEventListener('drop', (e) => {
       e.preventDefault();
       e.stopPropagation();
       container.classList.remove('drag-over');
-
       const files = e.dataTransfer.files;
       if (files.length === 0) return;
-
       if (files.length >= 2) {
         loadFileInto(files[0], 'left');
         loadFileInto(files[1], 'right');
@@ -511,7 +564,7 @@ const Editor = (() => {
   function setFilename(side, name) {
     const el = document.getElementById(side === 'left' ? 'left-filename' : 'right-filename');
     if (el) el.textContent = name;
-    localStorage.setItem(`gcode-compare-${side}-filename`, name);
+    try { localStorage.setItem(`gcode-compare-${side}-filename`, name); } catch (e) { /* storage blocked */ }
   }
 
   function getFilename(side) {
@@ -519,23 +572,27 @@ const Editor = (() => {
     return el ? el.textContent : 'untitled';
   }
 
+  function stateFor(side) {
+    return side === 'left' ? leftState : rightState;
+  }
+
   function getValue(side) {
-    const state = side === 'left' ? leftState : rightState;
+    const state = stateFor(side);
     return state ? state.content : '';
   }
 
   function setValue(side, text) {
-    const state = side === 'left' ? leftState : rightState;
+    const state = stateFor(side);
     if (!state) return;
     state.content = text;
     state.textarea.value = text;
+    state.cursorLine = -1;
     render(state);
   }
 
   function setDecorations(side, decorations, padding, disabledLines, separators) {
-    const state = side === 'left' ? leftState : rightState;
+    const state = stateFor(side);
     if (!state) return;
-
     state.decorations = {};
     for (const d of decorations) {
       state.decorations[d.line] = { type: d.type, tokenDiffs: d.tokenDiffs || null };
@@ -547,7 +604,7 @@ const Editor = (() => {
   }
 
   function setSeparatorCallbacks(side, callbacks) {
-    const state = side === 'left' ? leftState : rightState;
+    const state = stateFor(side);
     if (!state) return;
     state.onSeparatorClick = callbacks.onClick || null;
     state.onSeparatorToggle = callbacks.onToggle || null;
@@ -557,24 +614,9 @@ const Editor = (() => {
   }
 
   function setDropdownState(side, open) {
-    const state = side === 'left' ? leftState : rightState;
+    const state = stateFor(side);
     if (!state) return;
     setDropdownOpen(state, open);
-  }
-
-  function scrollToLine(side, lineNum) {
-    const state = side === 'left' ? leftState : rightState;
-    if (!state) return;
-    const lineCount = state.content.split('\n').length;
-    if (lineNum < 0 || lineNum >= lineCount) return;
-    const lineHeight = 20;
-    let displayLine = lineNum;
-    for (let i = 0; i <= lineNum; i++) {
-      displayLine += (state.alignmentPadding[i] || 0);
-      if (state.toolpathSeparators[i]) displayLine++;
-    }
-    const targetScroll = displayLine * lineHeight - state.wrapper.clientHeight / 2;
-    state.wrapper.scrollTop = Math.max(0, targetScroll);
   }
 
   /** Set the TOL master button state on both panes. */
@@ -585,6 +627,28 @@ const Editor = (() => {
     }
   }
 
+  function scrollToLine(side, lineNum) {
+    const state = stateFor(side);
+    if (!state) return;
+    const row = state.lineToRow[lineNum];
+    if (row === undefined) return;
+    const targetScroll = row * LINE_HEIGHT - state.wrapper.clientHeight / 2;
+    state.wrapper.scrollTop = Math.max(0, targetScroll);
+  }
+
+  /** Display row of a text line (includes padding and separator rows above it). */
+  function getDisplayRow(side, lineNum) {
+    const state = stateFor(side);
+    if (!state) return 0;
+    const row = state.lineToRow[lineNum];
+    return row === undefined ? 0 : row;
+  }
+
+  function getTotalRows(side) {
+    const state = stateFor(side);
+    return state ? state.rows.length : 0;
+  }
+
   function getLineCount(side) {
     const val = getValue(side);
     return val ? val.split('\n').length : 0;
@@ -593,6 +657,8 @@ const Editor = (() => {
   return {
     init, getValue, setValue, setFilename, getFilename,
     setDecorations, scrollToLine, setSyncScroll,
-    setSeparatorCallbacks, setDropdownState, setTolAllActive, getLineCount, loadFileInto
+    setSeparatorCallbacks, setDropdownState, setTolAllActive,
+    getDisplayRow, getTotalRows, getLineCount, loadFileInto,
+    syntaxHighlightLine
   };
 })();
