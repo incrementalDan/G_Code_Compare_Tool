@@ -22,11 +22,15 @@ const DiffEngine = (() => {
       hOffset: null,
       dOffset: null,
       comment: null,
+      parenComments: [],
+      semiComments: [],
       macros: [],
+      programNumber: null,
       lineNumber: null,
       blockDelete: false,
       isBlank: false,
       isCommentOnly: false,
+      raw: line,
       tokens: []
     };
 
@@ -40,10 +44,12 @@ const DiffEngine = (() => {
     const src = line;
     const len = src.length;
 
+    // Block delete may follow leading whitespace
+    while (pos < len && /\s/.test(src[pos])) pos++;
     if (src[pos] === '/') {
       result.blockDelete = true;
-      result.tokens.push({ type: 'blockDelete', text: '/', start: 0, end: 1 });
-      pos = 1;
+      result.tokens.push({ type: 'blockDelete', text: '/', start: pos, end: pos + 1 });
+      pos++;
     }
 
     while (pos < len) {
@@ -55,7 +61,8 @@ const DiffEngine = (() => {
         const text = src.substring(pos, closePos);
         const inner = text.replace(/^\(/, '').replace(/\)$/, '').trim();
         result.comment = result.comment ? result.comment + ' ' + inner : inner;
-        result.tokens.push({ type: 'comment', text, start: pos, end: closePos });
+        result.parenComments.push(inner);
+        result.tokens.push({ type: 'comment', kind: 'paren', text, start: pos, end: closePos });
         pos = closePos;
         continue;
       }
@@ -64,7 +71,8 @@ const DiffEngine = (() => {
         const text = src.substring(pos);
         const inner = text.substring(1).trim();
         result.comment = result.comment ? result.comment + ' ' + inner : inner;
-        result.tokens.push({ type: 'comment', text, start: pos, end: len });
+        result.semiComments.push(inner);
+        result.tokens.push({ type: 'comment', kind: 'semi', text, start: pos, end: len });
         pos = len;
         continue;
       }
@@ -92,6 +100,7 @@ const DiffEngine = (() => {
       if ((src[pos] === 'O' || src[pos] === 'o') && /\d/.test(src[pos + 1] || '')) {
         const m = src.substring(pos).match(/^[oO]\d+/);
         if (m) {
+          result.programNumber = parseInt(m[0].substring(1), 10);
           result.tokens.push({ type: 'program', text: m[0], start: pos, end: pos + m[0].length });
           pos += m[0].length;
           continue;
@@ -156,7 +165,7 @@ const DiffEngine = (() => {
             result.tokens.push({ type: 'param', text, value: num, param: letter, start: tStart, end: tEnd });
             break;
           default:
-            result.tokens.push({ type: 'other', text, value: num, start: tStart, end: tEnd });
+            result.tokens.push({ type: 'other', text, value: num, param: letter, start: tStart, end: tEnd });
         }
         pos = tEnd;
         continue;
@@ -175,7 +184,9 @@ const DiffEngine = (() => {
   // Modal G-Code State Tracking
   // =====================================================
 
-  const MODAL_MOTION_CODES = new Set([0, 1, 2, 3]);
+  // Group 1 motion codes: rapid, feed, arcs, and canned cycles (G80 cancels).
+  // A bare coordinate line moves according to whichever of these is active.
+  const MODAL_MOTION_CODES = new Set([0, 1, 2, 3, 73, 74, 76, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89]);
 
   /**
    * Track modal G-code state across a file.
@@ -429,7 +440,9 @@ const DiffEngine = (() => {
       const toolNumber = g100 ? g100.toolNumber : prevToolNumber;
       const nNumber = g100 ? g100.nNumber : null;
       const spindleSpeed = g100 ? g100.spindleSpeed : null;
-      const anchorLine = g100 ? g100.lineIndex : ca.commentStart;
+      // Separator sits on the visible comment line (toolpath name)
+      const anchorLine = ca.commentStart;
+      const g100Line = g100 ? g100.lineIndex : -1;
 
       prevToolNumber = toolNumber;
 
@@ -443,6 +456,7 @@ const DiffEngine = (() => {
         spindleSpeed,
         startLine: preambleStart,
         anchorLine,
+        g100Line,
         endLine: lines.length - 1
       });
     }
@@ -597,14 +611,10 @@ const DiffEngine = (() => {
 
     const parts = [];
 
-    // G-codes (normalized)
-    for (const g of parsed.gCodes) {
-      parts.push(rules.normalizeGMCodes ? g.replace(/([GM])0+(\d)/gi, '$1$2').toUpperCase() : g.toUpperCase());
-    }
-    // M-codes
-    for (const m of parsed.mCodes) {
-      parts.push(rules.normalizeGMCodes ? m.replace(/([GM])0+(\d)/gi, '$1$2').toUpperCase() : m.toUpperCase());
-    }
+    // G/M codes are always normalized here (G01 == G1) so equivalent lines
+    // still pair up. Format-only differences are reported by classifyTokens.
+    for (const g of parsed.gCodes) parts.push(normCode(g));
+    for (const m of parsed.mCodes) parts.push(normCode(m));
 
     const hasGM = parsed.gCodes.length > 0 || parsed.mCodes.length > 0;
 
@@ -631,10 +641,11 @@ const DiffEngine = (() => {
     if (parsed.dOffset !== null) parts.push('D');
     // Macros
     if (parsed.macros.length > 0) parts.push('#MACRO');
-    // Comment-only lines get full text for precise matching
-    if (parsed.isCommentOnly && parsed.comment) {
-      const ct = rules.ignoreCase ? parsed.comment.toLowerCase() : parsed.comment;
-      parts.push('(' + ct + ')');
+    // Comment-only lines get their (rule-normalized) text for precise matching.
+    // Ignored comment types contribute nothing.
+    if (parsed.isCommentOnly) {
+      const ct = commentText(parsed, rules);
+      if (ct) parts.push('(' + ct + ')');
     }
 
     return parts.join(' ') || '__EMPTY__';
@@ -646,52 +657,126 @@ const DiffEngine = (() => {
 
   const FP_EPS = 1e-10;
 
-  function classifyTokens(parsedA, parsedB) {
-    const tokenDiffs = [];
+  /** Strip leading zeros and uppercase: G01 -> G1, m03 -> M3, T05 -> T5. */
+  function normCode(c) {
+    return c.replace(/^([A-Z])0+(\d)/i, '$1$2').toUpperCase();
+  }
 
-    // Compare G-codes
-    const gA = normalizeCodeSet(parsedA.gCodes);
-    const gB = normalizeCodeSet(parsedB.gCodes);
-    if (gA !== gB) {
-      // Motion code interchange (G0/G1/G2/G3) is normal CAM behavior, not structural
-      const isMotionOnly = (codes) => {
-        if (!codes) return true;
-        return codes.split(',').every(g => {
-          const num = parseFloat(g.replace(/^G/i, ''));
-          return num >= 0 && num <= 3;
-        });
-      };
-      const severity = (isMotionOnly(gA) && isMotionOnly(gB)) ? 'minor' : 'critical';
-      tokenDiffs.push({ field: 'gCode', severity, leftVal: gA, rightVal: gB,
-        leftTokens: parsedA.tokens.filter(t => t.type === 'gCode'),
-        rightTokens: parsedB.tokens.filter(t => t.type === 'gCode') });
+  function codeNum(c) {
+    return parseFloat(c.replace(/^[A-Z]/i, ''));
+  }
+
+  function isMotionCode(c) {
+    return MODAL_MOTION_CODES.has(codeNum(c));
+  }
+
+  /** Work offsets G54-G59 (G54.1 extended form included). */
+  function isWorkOffsetCode(c) {
+    const n = codeNum(c);
+    return n >= 54 && n < 60;
+  }
+
+  function normText(text, rules) {
+    let t = text;
+    if (rules.ignoreWhitespace) t = t.replace(/\s+/g, '');
+    if (rules.ignoreCase) t = t.toLowerCase();
+    return t;
+  }
+
+  /** Comment text that takes part in comparison, after applying ignore rules. */
+  function commentText(parsed, rules) {
+    const parts = [];
+    if (!rules.ignoreParenComments) parts.push(...parsed.parenComments);
+    if (!rules.ignoreSemiComments) parts.push(...parsed.semiComments);
+    return normText(parts.join(' '), rules);
+  }
+
+  function comparedCommentTokens(parsed, rules) {
+    return parsed.tokens.filter(t => t.type === 'comment' &&
+      !(t.kind === 'paren' && rules.ignoreParenComments) &&
+      !(t.kind === 'semi' && rules.ignoreSemiComments));
+  }
+
+  /** Line text with all comments removed (used for case/whitespace format checks). */
+  function codePart(parsed) {
+    let s = parsed.raw || '';
+    const comments = parsed.tokens.filter(t => t.type === 'comment').sort((a, b) => b.start - a.start);
+    for (const c of comments) s = s.slice(0, c.start) + s.slice(c.end);
+    return s.trim();
+  }
+
+  /**
+   * ALL rules that decide how serious a line difference is live here.
+   * Severities per token diff:
+   *   workoffset — G54-G59 change (highest tier, always surfaces)
+   *   critical   — anything that can change what the machine does
+   *   minor      — format-only differences (shown amber)
+   *   coordinate / coordinate-z — numeric value change, graded later by tolerance
+   *
+   * modalA / modalB are the active motion modes (G0/G1/G2/G3/canned) for each line.
+   */
+  function classifyTokens(parsedA, parsedB, rules, modalA, modalB) {
+    rules = rules || {};
+    const tokenDiffs = [];
+    const gTokA = parsedA.tokens.filter(t => t.type === 'gCode');
+    const gTokB = parsedB.tokens.filter(t => t.type === 'gCode');
+
+    // --- Motion mode (G0/G1/G2/G3/canned cycles), using modal state ---
+    // Rapid vs feed is a crash risk, so any change is critical.
+    const movesA = Object.keys(parsedA.axes).length + Object.keys(parsedA.rotary).length + Object.keys(parsedA.arcParams).length > 0;
+    const movesB = Object.keys(parsedB.axes).length + Object.keys(parsedB.rotary).length + Object.keys(parsedB.arcParams).length > 0;
+    const explicitMotionA = parsedA.gCodes.filter(isMotionCode).map(normCode).join(',');
+    const explicitMotionB = parsedB.gCodes.filter(isMotionCode).map(normCode).join(',');
+    const motionA = modalA !== undefined ? (modalA || '') : explicitMotionA;
+    const motionB = modalB !== undefined ? (modalB || '') : explicitMotionB;
+    // Only matters when a line moves or sets the mode itself.
+    if ((movesA || movesB || explicitMotionA || explicitMotionB) && motionA !== motionB) {
+      tokenDiffs.push({ field: 'motion', severity: 'critical', leftVal: motionA, rightVal: motionB,
+        leftTokens: gTokA.filter(t => isMotionCode(t.text)),
+        rightTokens: gTokB.filter(t => isMotionCode(t.text)) });
     }
 
-    // Compare M-codes
-    const mA = normalizeCodeSet(parsedA.mCodes);
-    const mB = normalizeCodeSet(parsedB.mCodes);
+    // --- Non-motion G-codes (set compare) ---
+    const nonMotionA = parsedA.gCodes.filter(g => !isMotionCode(g)).map(normCode);
+    const nonMotionB = parsedB.gCodes.filter(g => !isMotionCode(g)).map(normCode);
+    const setA = new Set(nonMotionA), setB = new Set(nonMotionB);
+    const changed = [...setA].filter(g => !setB.has(g)).concat([...setB].filter(g => !setA.has(g)));
+    if (changed.length > 0) {
+      const changedSet = new Set(changed);
+      const woChanged = changed.some(isWorkOffsetCode);
+      tokenDiffs.push({ field: woChanged ? 'workOffset' : 'gCode',
+        severity: woChanged ? 'workoffset' : 'critical',
+        leftVal: [...setA].sort().join(','), rightVal: [...setB].sort().join(','),
+        leftTokens: gTokA.filter(t => changedSet.has(normCode(t.text))),
+        rightTokens: gTokB.filter(t => changedSet.has(normCode(t.text))) });
+    }
+
+    // --- M-codes ---
+    const mA = parsedA.mCodes.map(normCode).sort().join(',');
+    const mB = parsedB.mCodes.map(normCode).sort().join(',');
     if (mA !== mB) {
       tokenDiffs.push({ field: 'mCode', severity: 'critical', leftVal: mA, rightVal: mB,
         leftTokens: parsedA.tokens.filter(t => t.type === 'mCode'),
         rightTokens: parsedB.tokens.filter(t => t.type === 'mCode') });
     }
 
-    // Compare critical single-value fields
+    // --- Tool, offsets, spindle, feed ---
     compareField(parsedA, parsedB, 'tool', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'hOffset', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'dOffset', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'spindle', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'feed', 'critical', tokenDiffs);
 
-    // Compare axes
+    // --- Axes. Value change -> graded by tolerance. Missing on one side -> critical. ---
     for (const axis of ['X', 'Y', 'Z', 'A', 'B', 'C']) {
       const va = parsedA.axes[axis] ?? parsedA.rotary[axis] ?? null;
       const vb = parsedB.axes[axis] ?? parsedB.rotary[axis] ?? null;
       if (va === null && vb === null) continue;
       if (va === null || vb === null || Math.abs(va - vb) > FP_EPS) {
-        const sev = axis === 'Z' ? 'coordinate-z' : 'coordinate';
+        const missing = va === null || vb === null;
+        const sev = missing ? 'critical' : (axis === 'Z' ? 'coordinate-z' : 'coordinate');
         const tType = (axis === 'A' || axis === 'B' || axis === 'C') ? 'rotary' : 'axis';
-        const delta = (va !== null && vb !== null) ? Math.abs(va - vb) : null;
+        const delta = missing ? null : Math.abs(va - vb);
         tokenDiffs.push({ field: 'axis-' + axis, severity: sev,
           leftVal: va, rightVal: vb, delta,
           leftTokens: parsedA.tokens.filter(t => (t.type === tType) && t.axis === axis),
@@ -699,70 +784,134 @@ const DiffEngine = (() => {
       }
     }
 
-    // Compare arc params
+    // --- Arc params ---
     for (const p of ['I', 'J', 'K']) {
       const va = parsedA.arcParams[p] ?? null;
       const vb = parsedB.arcParams[p] ?? null;
       if (va === null && vb === null) continue;
       if (va === null || vb === null || Math.abs(va - vb) > FP_EPS) {
-        const delta = (va !== null && vb !== null) ? Math.abs(va - vb) : null;
-        tokenDiffs.push({ field: 'arc-' + p, severity: 'coordinate',
+        const missing = va === null || vb === null;
+        const delta = missing ? null : Math.abs(va - vb);
+        tokenDiffs.push({ field: 'arc-' + p, severity: missing ? 'critical' : 'coordinate',
           leftVal: va, rightVal: vb, delta,
           leftTokens: parsedA.tokens.filter(t => t.type === 'arcParam' && t.axis === p),
           rightTokens: parsedB.tokens.filter(t => t.type === 'arcParam' && t.axis === p) });
       }
     }
 
-    // Compare comments
-    if ((parsedA.comment || '') !== (parsedB.comment || '')) {
+    // --- Comments (respecting ignore rules) ---
+    const cA = commentText(parsedA, rules);
+    const cB = commentText(parsedB, rules);
+    if (cA !== cB) {
       tokenDiffs.push({ field: 'comment', severity: 'critical',
         leftVal: parsedA.comment, rightVal: parsedB.comment,
-        leftTokens: parsedA.tokens.filter(t => t.type === 'comment'),
-        rightTokens: parsedB.tokens.filter(t => t.type === 'comment') });
+        leftTokens: comparedCommentTokens(parsedA, rules),
+        rightTokens: comparedCommentTokens(parsedB, rules) });
     }
 
-    // Compare macros
-    const macroA = parsedA.macros.join('|');
-    const macroB = parsedB.macros.join('|');
+    // --- Macros ---
+    const macroA = normText(parsedA.macros.join('|'), { ...rules, ignoreCase: true });
+    const macroB = normText(parsedB.macros.join('|'), { ...rules, ignoreCase: true });
     if (macroA !== macroB) {
       tokenDiffs.push({ field: 'macro', severity: 'critical',
-        leftVal: macroA, rightVal: macroB,
+        leftVal: parsedA.macros.join('|'), rightVal: parsedB.macros.join('|'),
         leftTokens: parsedA.tokens.filter(t => t.type === 'macro'),
         rightTokens: parsedB.tokens.filter(t => t.type === 'macro') });
     }
 
-    // Compare other params (R, P, Q, L)
-    const paramsA = parsedA.tokens.filter(t => t.type === 'param');
-    const paramsB = parsedB.tokens.filter(t => t.type === 'param');
-    const paramMapA = {};
-    const paramMapB = {};
-    for (const p of paramsA) paramMapA[p.param] = p.value;
-    for (const p of paramsB) paramMapB[p.param] = p.value;
-    const allParams = new Set([...Object.keys(paramMapA), ...Object.keys(paramMapB)]);
-    for (const pk of allParams) {
-      if (paramMapA[pk] !== paramMapB[pk]) {
-        tokenDiffs.push({ field: 'param-' + pk, severity: 'critical',
-          leftVal: paramMapA[pk], rightVal: paramMapB[pk],
-          leftTokens: paramsA.filter(t => t.param === pk),
-          rightTokens: paramsB.filter(t => t.param === pk) });
+    // --- Params (R, P, Q, L) and unrecognized words (U, V, W, E ...) ---
+    for (const ttype of ['param', 'other']) {
+      const tA = parsedA.tokens.filter(t => t.type === ttype);
+      const tB = parsedB.tokens.filter(t => t.type === ttype);
+      const mapA = {}, mapB = {};
+      for (const t of tA) mapA[t.param] = t.value;
+      for (const t of tB) mapB[t.param] = t.value;
+      const keys = new Set([...Object.keys(mapA), ...Object.keys(mapB)]);
+      for (const k of keys) {
+        const va = mapA[k], vb = mapB[k];
+        if (va === undefined || vb === undefined || Math.abs(va - vb) > FP_EPS) {
+          tokenDiffs.push({ field: ttype + '-' + k, severity: 'critical',
+            leftVal: va, rightVal: vb,
+            leftTokens: tA.filter(t => t.param === k),
+            rightTokens: tB.filter(t => t.param === k) });
+        }
       }
     }
 
-    // Determine overall severity
+    // --- Block delete: a "/" switches the whole line on/off at the control ---
+    if (!rules.ignoreBlockDelete && parsedA.blockDelete !== parsedB.blockDelete) {
+      tokenDiffs.push({ field: 'blockDelete', severity: 'critical',
+        leftVal: parsedA.blockDelete, rightVal: parsedB.blockDelete,
+        leftTokens: parsedA.tokens.filter(t => t.type === 'blockDelete'),
+        rightTokens: parsedB.tokens.filter(t => t.type === 'blockDelete') });
+    }
+
+    // --- N-numbers (format only) ---
+    if (!rules.ignoreLineNumbers && (parsedA.lineNumber || '').toUpperCase() !== (parsedB.lineNumber || '').toUpperCase()) {
+      tokenDiffs.push({ field: 'lineNumber', severity: 'minor',
+        leftVal: parsedA.lineNumber, rightVal: parsedB.lineNumber,
+        leftTokens: parsedA.tokens.filter(t => t.type === 'lineNumber'),
+        rightTokens: parsedB.tokens.filter(t => t.type === 'lineNumber') });
+    }
+
+    // --- Program number (O-number) ---
+    if (parsedA.programNumber !== parsedB.programNumber) {
+      tokenDiffs.push({ field: 'program', severity: 'minor',
+        leftVal: parsedA.programNumber, rightVal: parsedB.programNumber,
+        leftTokens: parsedA.tokens.filter(t => t.type === 'program'),
+        rightTokens: parsedB.tokens.filter(t => t.type === 'program') });
+    }
+
+    // --- Format-only differences (only checked when nothing else differs) ---
+    if (tokenDiffs.length === 0) {
+      const codeA = codePart(parsedA), codeB = codePart(parsedB);
+      if (codeA !== codeB) {
+        const strip = s => s.replace(/\s+/g, '');
+        let fmt = null;
+        if (!rules.normalizeGMCodes) {
+          const rawGM = p => p.tokens.filter(t => t.type === 'gCode' || t.type === 'mCode').map(t => t.text.toUpperCase()).sort().join(',');
+          if (rawGM(parsedA) !== rawGM(parsedB)) fmt = 'gmFormat';
+        }
+        if (!fmt && !rules.ignoreCase && strip(codeA) !== strip(codeB) && strip(codeA).toUpperCase() === strip(codeB).toUpperCase()) fmt = 'case';
+        if (!fmt && !rules.ignoreWhitespace && strip(codeA) === strip(codeB)) fmt = 'whitespace';
+        if (fmt) {
+          tokenDiffs.push({ field: fmt, severity: 'minor', leftVal: codeA, rightVal: codeB,
+            leftTokens: [], rightTokens: [] });
+        }
+      }
+    }
+
+    // Overall severity: workoffset > critical > coordinate-z > coordinate > minor
     let severity = 'equal';
     if (tokenDiffs.length > 0) {
-      const hasCritical = tokenDiffs.some(d => d.severity === 'critical');
-      const hasCoordZ = tokenDiffs.some(d => d.severity === 'coordinate-z');
-      if (hasCritical) severity = 'critical';
-      else if (hasCoordZ) severity = 'coordinate-z';
-      else severity = 'coordinate';
+      const has = sev => tokenDiffs.some(d => d.severity === sev);
+      if (has('workoffset')) severity = 'workoffset';
+      else if (has('critical')) severity = 'critical';
+      else if (has('coordinate-z')) severity = 'coordinate-z';
+      else if (has('coordinate')) severity = 'coordinate';
+      else severity = 'minor';
     }
 
     return { severity, tokenDiffs };
   }
 
-  function normalizeCodeSet(codes) {
-    return codes.map(c => c.replace(/([GMT])0+(\d)/gi, '$1$2').toUpperCase()).sort().join(',');
+  /**
+   * Rule for one-sided lines (added/removed): does the line carry content that
+   * must surface even inside a hidden toolpath? Same rule set as classifyTokens,
+   * applied against an empty line.
+   */
+  function hasCriticalContent(parsed, rules) {
+    if (parsed.isBlank) return false;
+    const empty = parseGCodeLine('');
+    const { tokenDiffs } = classifyTokens(parsed, empty, rules);
+    // Plain motion (axes, arcs, motion mode) does not count: hiding a toolpath
+    // should still hide its re-posted moves.
+    return tokenDiffs.some(d => (d.severity === 'critical' || d.severity === 'workoffset') &&
+      d.field !== 'motion' && !d.field.startsWith('axis-') && !d.field.startsWith('arc-'));
+  }
+
+  function hasWorkOffset(parsed) {
+    return parsed.gCodes.some(isWorkOffsetCode);
   }
 
   function compareField(parsedA, parsedB, field, severity, tokenDiffs) {
@@ -781,45 +930,34 @@ const DiffEngine = (() => {
   // =====================================================
 
   /**
-   * Classify coordinate diffs using tolerance thresholds.
-   * - All deltas within minorThreshold → 'equal' (invisible)
-   * - Any delta within majorThreshold → 'minor' (amber)
-   * - Any delta beyond majorThreshold → 'critical' (red)
+   * Grade coordinate diffs using tolerance thresholds (max delta on the line):
+   * - <= minorThreshold -> 'tolerance' (hidden while the toolpath's TOL is on;
+   *                        shown as minor when TOL is off)
+   * - <= majorThreshold -> 'minor' (amber)
+   * - >  majorThreshold -> 'critical' (red, always surfaces)
+   * Lines that already have a critical/work-offset diff are never downgraded.
+   * Missing-axis diffs are already critical in classifyTokens.
    */
-  function applyToleranceClassification(sectionOps, minorThreshold, majorThreshold) {
-    for (const op of sectionOps) {
-      if (!op.tokenDiffs) continue;
-      const hasCritical = op.tokenDiffs.some(d => d.severity === 'critical');
-      if (hasCritical) continue;
+  function applyToleranceClassification(ops, minorThreshold, majorThreshold) {
+    for (const op of ops) {
+      if (op.type !== 'coordinate' && op.type !== 'coordinate-z') continue;
 
-      const coordDiffs = op.tokenDiffs.filter(d =>
-        d.severity === 'coordinate' || d.severity === 'coordinate-z'
-      );
-      if (coordDiffs.length === 0) continue;
-
-      // Check max delta across all coordinate diffs on this line
       let maxDelta = 0;
-      let allHaveDelta = true;
-      for (const cd of coordDiffs) {
-        if (cd.delta === null) {
-          allHaveDelta = false;
-          break;
+      for (const cd of op.tokenDiffs) {
+        if ((cd.severity === 'coordinate' || cd.severity === 'coordinate-z') && cd.delta > maxDelta) {
+          maxDelta = cd.delta;
         }
-        if (cd.delta > maxDelta) maxDelta = cd.delta;
       }
+      op.maxDelta = maxDelta;
+      const hasMinorDiff = op.tokenDiffs.some(d => d.severity === 'minor');
 
-      if (!allHaveDelta) {
-        // Missing axis on one side — flag as critical
+      if (maxDelta > majorThreshold + FP_EPS) {
         op.type = 'critical';
-        continue;
-      }
-
-      if (maxDelta <= minorThreshold + FP_EPS) {
-        op.type = 'tolerance';
-      } else if (maxDelta <= majorThreshold + FP_EPS) {
+        op.overMajor = true;
+      } else if (maxDelta > minorThreshold + FP_EPS || hasMinorDiff) {
         op.type = 'minor';
       } else {
-        op.type = 'critical';
+        op.type = 'tolerance';
       }
     }
   }
@@ -895,6 +1033,22 @@ const DiffEngine = (() => {
     const dp = buildLCSTable(leftFP, rightFP, leftFP.length, rightFP.length);
     const lcsLen = dp[leftFP.length][rightFP.length];
     return lcsLen / Math.max(leftFP.length, rightFP.length);
+  }
+
+  /** Indices (into arr) of one longest strictly increasing subsequence. */
+  function longestIncreasing(arr) {
+    const n = arr.length;
+    const len = new Array(n).fill(1), prev = new Array(n).fill(-1);
+    let best = -1;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < i; j++) {
+        if (arr[j] < arr[i] && len[j] + 1 > len[i]) { len[i] = len[j] + 1; prev[i] = j; }
+      }
+      if (best < 0 || len[i] > len[best]) best = i;
+    }
+    const out = new Set();
+    for (let i = best; i >= 0; i = prev[i]) out.add(i);
+    return out;
   }
 
   function matchToolpaths(leftTPs, rightTPs, leftParsed, rightParsed, rules) {
@@ -998,18 +1152,36 @@ const DiffEngine = (() => {
       }
     }
 
-    // --- Merge all results in file-position order ---
-    const allEntries = [];
-    for (const m of keyMatched) allEntries.push(m);
-    for (const m of simMatched) allEntries.push(m);
-    for (const i of unmatchedLeft) allEntries.push({ left: leftTPs[i], right: null });
-    for (const i of unmatchedRight) allEntries.push({ left: null, right: rightTPs[i] });
+    // --- Merge in file order ---
+    // Pairs must not cross (left order and right order must agree), otherwise
+    // the two panes cannot line up. Keep the largest non-crossing set
+    // (longest increasing run of right indices); crossed pairs become unmatched.
+    const leftIndex = new Map(leftTPs.map((tp, i) => [tp, i]));
+    const rightIndex = new Map(rightTPs.map((tp, i) => [tp, i]));
+    const pairs = keyMatched.concat(simMatched)
+      .map(m => ({ li: leftIndex.get(m.left), ri: rightIndex.get(m.right), m }))
+      .sort((a, b) => a.li - b.li);
 
-    allEntries.sort((a, b) => {
-      const aPos = a.left ? a.left.startLine : a.right.startLine;
-      const bPos = b.left ? b.left.startLine : b.right.startLine;
-      return aPos - bPos;
+    const keep = longestIncreasing(pairs.map(p => p.ri));
+    const kept = [];
+    pairs.forEach((p, idx) => {
+      if (keep.has(idx)) kept.push(p);
+      else { unmatchedLeft.add(p.li); unmatchedRight.add(p.ri); }
     });
+
+    // Walk both files together; unmatched toolpaths go just before the next
+    // matched pair that follows them in their own file.
+    const allEntries = [];
+    const ul = [...unmatchedLeft].sort((a, b) => a - b);
+    const ur = [...unmatchedRight].sort((a, b) => a - b);
+    let a = 0, b = 0;
+    for (const p of kept) {
+      while (a < ul.length && ul[a] < p.li) allEntries.push({ left: leftTPs[ul[a++]], right: null });
+      while (b < ur.length && ur[b] < p.ri) allEntries.push({ left: null, right: rightTPs[ur[b++]] });
+      allEntries.push(p.m);
+    }
+    while (a < ul.length) allEntries.push({ left: leftTPs[ul[a++]], right: null });
+    while (b < ur.length) allEntries.push({ left: null, right: rightTPs[ur[b++]] });
 
     return allEntries;
   }
@@ -1064,34 +1236,45 @@ const DiffEngine = (() => {
 
         // classifyOps — index maps already point to real line indices
         const segOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed,
-                                    segLeftIdxMap, segRightIdxMap);
+                                    segLeftIdxMap, segRightIdxMap, rules, leftModal, rightModal);
         allOps.push(...segOps);
 
       } else if (match.left) {
         // Entire toolpath removed
         for (let i = match.left.startLine; i <= match.left.endLine; i++) {
           if (leftParsed[i].isBlank) continue;
-          allOps.push({ type: 'removed', leftIdx: i, leftLine: leftLines[i] });
+          allOps.push(oneSidedOp('removed', i, leftLines, leftParsed, rules));
         }
       } else {
         // Entire toolpath added
         for (let i = match.right.startLine; i <= match.right.endLine; i++) {
           if (rightParsed[i].isBlank) continue;
-          allOps.push({ type: 'added', rightIdx: i, rightLine: rightLines[i] });
+          allOps.push(oneSidedOp('added', i, rightLines, rightParsed, rules));
         }
       }
     }
 
-    // Snapshot raw types before tolerance reclassification
-    for (const op of allOps) op.rawType = op.type;
-
-    // Post-process: apply tolerance classification to all coordinate diffs
+    // Grade coordinate diffs by tolerance
     applyToleranceClassification(allOps, minorThreshold, majorThreshold);
+
+    // alwaysShow: the diff must surface even inside a hidden toolpath
+    for (const op of allOps) {
+      if (op.type === 'critical' || op.type === 'workoffset') op.alwaysShow = true;
+    }
 
     return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches };
   }
 
-  function classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap) {
+  function oneSidedOp(type, idx, lines, parsed, rules) {
+    const op = type === 'added'
+      ? { type, rightIdx: idx, rightLine: lines[idx] }
+      : { type, leftIdx: idx, leftLine: lines[idx] };
+    if (hasCriticalContent(parsed[idx], rules)) op.alwaysShow = true;
+    if (hasWorkOffset(parsed[idx])) op.workOffset = true;
+    return op;
+  }
+
+  function classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap, rules, leftModal, rightModal) {
     const result = [];
     let i = 0;
 
@@ -1099,7 +1282,7 @@ const DiffEngine = (() => {
       if (rawOps[i].type === 'equal') {
         const li = leftIdxMap[rawOps[i].leftIdx];
         const ri = rightIdxMap[rawOps[i].rightIdx];
-        const classification = classifyTokens(leftParsed[li], rightParsed[ri]);
+        const classification = classifyTokens(leftParsed[li], rightParsed[ri], rules, leftModal[li], rightModal[ri]);
         if (classification.severity === 'equal') {
           result.push({ type: 'equal', leftIdx: li, rightIdx: ri,
                         leftLine: leftLines[li], rightLine: rightLines[ri] });
@@ -1129,7 +1312,7 @@ const DiffEngine = (() => {
       for (let p = 0; p < pairCount; p++) {
         const li = leftIdxMap[removes[p].leftIdx];
         const ri = rightIdxMap[adds[p].rightIdx];
-        const classification = classifyTokens(leftParsed[li], rightParsed[ri]);
+        const classification = classifyTokens(leftParsed[li], rightParsed[ri], rules, leftModal[li], rightModal[ri]);
         const type = classification.severity === 'equal' ? 'equal' : classification.severity;
         result.push({
           type,
@@ -1141,11 +1324,11 @@ const DiffEngine = (() => {
 
       for (let p = pairCount; p < removes.length; p++) {
         const li = leftIdxMap[removes[p].leftIdx];
-        result.push({ type: 'removed', leftIdx: li, leftLine: leftLines[li] });
+        result.push(oneSidedOp('removed', li, leftLines, leftParsed, rules));
       }
       for (let p = pairCount; p < adds.length; p++) {
         const ri = rightIdxMap[adds[p].rightIdx];
-        result.push({ type: 'added', rightIdx: ri, rightLine: rightLines[ri] });
+        result.push(oneSidedOp('added', ri, rightLines, rightParsed, rules));
       }
     }
 
@@ -1159,7 +1342,7 @@ const DiffEngine = (() => {
   function countStats(diffResult) {
     let critical = 0, added = 0, removed = 0, minor = 0;
     for (const op of diffResult) {
-      if (op.type === 'critical') critical++;
+      if (op.type === 'critical' || op.type === 'workoffset') critical++;
       else if (op.type === 'minor') minor++;
       else if (op.type === 'added') added++;
       else if (op.type === 'removed') removed++;
@@ -1175,6 +1358,7 @@ const DiffEngine = (() => {
     parseGCodeLine,
     fingerprint,
     classifyTokens,
+    hasCriticalContent,
     segmentIntoSections,
     segmentIntoToolpaths,
     trackModalState,
