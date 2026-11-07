@@ -13,6 +13,7 @@
   --accent: #0e639c;
 
   --diff-major: #3b1111;
+  --diff-workoffset: #33104a;
   --diff-minor: #2e2500;
   --diff-added: #0d2818;
   --diff-removed: #2d0e0e;
@@ -206,7 +207,7 @@ html, body {
   color: #888;
   background: #333;
   border: 1px solid #555;
-  border-radius: 3px;
+  border-radius: 0;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   letter-spacing: 0.5px;
@@ -224,7 +225,7 @@ html, body {
   margin-left: 8px;
   background: #3a3a42;
   border: 1px solid #555;
-  border-radius: 3px;
+  border-radius: 0;
   width: 22px;
   height: 18px;
   display: flex;
@@ -326,9 +327,10 @@ html, body {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border-radius: 2px;
+  border-radius: 0;
 }
 
+.legend-workoffset { background: var(--diff-workoffset); border: 1px solid #c040ff; }
 .legend-critical { background: var(--diff-major); border: 1px solid #c62828; }
 .legend-minor { background: var(--diff-minor); border: 1px solid #c89a10; }
 .legend-tolerance { background: rgba(100, 100, 50, 0.3); border: 1px dotted #666; }
@@ -510,6 +512,9 @@ html, body {
 }
 
 /* Diff background colors on lines */
+.diff-bg-workoffset { background-color: var(--diff-workoffset); }
+.diff-bg-workoffset .line-content { border-left: 3px solid #c040ff; padding-left: 5px; }
+
 .diff-bg-major { background-color: var(--diff-major); }
 .diff-bg-major .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
 
@@ -601,9 +606,10 @@ html, body {
   left: 4px;
   right: 4px;
   height: 3px;
-  border-radius: 1px;
+  border-radius: 0;
 }
 
+.diff-marker.workoffset { background: #c040ff; height: 4px; z-index: 1; }
 .diff-marker.major { background: #c62828; }
 .diff-marker.minor { background: #c89a10; }
 
@@ -714,6 +720,7 @@ html, body {
 
 #status-left { display: flex; gap: 12px; }
 
+.status-workoffset { color: #c040ff; font-weight: 700; }
 .status-major { color: #c62828; }
 .status-minor-count { color: #c89a10; }
 
@@ -731,7 +738,7 @@ html, body {
 .token-diff {
   background: rgba(255, 200, 0, 0.35);
   border-bottom: 2px solid #ffcc00;
-  border-radius: 2px;
+  border-radius: 0;
   padding: 0 1px;
 }
 
@@ -742,7 +749,7 @@ html, body {
 * { scrollbar-width: thin; scrollbar-color: #424242 var(--bg-primary); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
-::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: #424242; border-radius: 0; }
 ::-webkit-scrollbar-thumb:hover { background: #555555; }
 
 /* ===== Transitions for interactive elements ===== */

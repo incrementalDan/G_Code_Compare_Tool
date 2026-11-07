@@ -39,7 +39,7 @@ const Editor = (() => {
     const tpHeader = document.createElement('div');
     tpHeader.className = 'tp-header-bar';
     tpHeader.innerHTML = '<span class="tp-header-label"></span>' +
-      '<button class="tp-tol-all-btn" title="Toggle tolerance filter for all toolpaths">TOL</button>' +
+      '<button class="tp-tol-all-btn active" title="Toggle tolerance filter for all toolpaths">TOL</button>' +
       '<span class="tp-header-arrow">&#9660;</span>';
 
     // Toolpath dropdown overlay (full list of all toolpaths)
@@ -141,8 +141,7 @@ const Editor = (() => {
     // Master tolerance toggle button
     tpHeader.querySelector('.tp-tol-all-btn').addEventListener('click', (e) => {
       e.stopPropagation();
-      const btn = e.target;
-      const isActive = btn.classList.toggle('active');
+      const isActive = !e.target.classList.contains('active');
       if (state.onToleranceToggleAll) state.onToleranceToggleAll(isActive);
     });
 
@@ -578,6 +577,14 @@ const Editor = (() => {
     state.wrapper.scrollTop = Math.max(0, targetScroll);
   }
 
+  /** Set the TOL master button state on both panes. */
+  function setTolAllActive(active) {
+    for (const st of [leftState, rightState]) {
+      if (!st) continue;
+      st.tpHeader.querySelector('.tp-tol-all-btn').classList.toggle('active', active);
+    }
+  }
+
   function getLineCount(side) {
     const val = getValue(side);
     return val ? val.split('\n').length : 0;
@@ -586,6 +593,6 @@ const Editor = (() => {
   return {
     init, getValue, setValue, setFilename, getFilename,
     setDecorations, scrollToLine, setSyncScroll,
-    setSeparatorCallbacks, setDropdownState, getLineCount, loadFileInto
+    setSeparatorCallbacks, setDropdownState, setTolAllActive, getLineCount, loadFileInto
   };
 })();
