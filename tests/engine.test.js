@@ -115,5 +115,52 @@ test('identical files have no diffs', () => {
   eq(diff(p, p).ops.every(o => o.type === 'equal'), true);
 });
 
+console.log('Number formats');
+test('X.5 vs X.6 is caught', () => eq(types(['G1 X.5'], ['G1 X.6']), 'critical'));
+test('X-.25 vs X-.35 is caught', () => eq(types(['G1 X-.25'], ['G1 X-.35']), 'critical'));
+test('F.5 vs F.6 is caught', () => eq(types(['G1 X1. F.5'], ['G1 X1. F.6']), 'critical'));
+test('X 1. (space) vs X 2. is caught', () => eq(types(['G1 X 1.'], ['G1 X 2.']), 'critical'));
+test('X0.5 equals X.5', () => eq(types(['G1 X0.5'], ['G1 X.5']), 'equal'));
+test('X+1. equals X1.', () => eq(types(['G1 X+1.'], ['G1 X1.']), 'equal'));
+
+console.log('Macros and expressions');
+test('GOTO target change is critical', () => eq(types(['IF [#1 GT 2] GOTO10'], ['IF [#1 GT 2] GOTO20']), 'critical'));
+test('GOTO is not read as a program number', () =>
+  eq(DE.parseGCodeLine('IF [#1 GT 2] GOTO10').programNumber, null));
+test('X[#101+1] vs X[#101+2] is critical', () => eq(types(['G1 X[#101+1]'], ['G1 X[#101+2]']), 'critical'));
+test('#101=SIN[30] vs SIN[45] is critical', () => eq(types(['#101=SIN[30]'], ['#101=SIN[45]']), 'critical'));
+test('nested bracket comment compared in full', () => eq(types(['(A(B)C)'], ['(A(B)D)']), 'critical'));
+
+console.log('Line pairing');
+test('inserted move lines up exactly', () =>
+  eq(types(['G1 X1. F10.', 'X2.', 'X3.'], ['G1 X1. F10.', 'X2.', 'X2.5', 'X3.']), 'equal,equal,added,equal'));
+test('unrelated lines are not paired', () =>
+  eq(types(['G0 X0.', 'M8', 'G1 X1.'], ['G0 X0.', 'T2', 'G1 X1.']), 'equal,removed,added,equal'));
+test('same-kind changed line is paired', () =>
+  eq(types(['G0 X0.', 'M8', 'G1 X1.'], ['G0 X0.', 'M9', 'G1 X1.']), 'equal,critical,equal'));
+
+console.log('Big files');
+function bigToolpath(n) {
+  const L = ['%', 'O1', '', '(SURF)', '(SCALLOP)', 'G100 T1 X0. Y0. S1000 M3', 'G1 Z0. F100.'];
+  for (let i = 0; i < n; i++) L.push(`X${(i * 0.01).toFixed(4)} Y${(i % 100 * 0.1).toFixed(4)} Z-.01`);
+  L.push('M30', '%');
+  return L;
+}
+test('70,000-line toolpath with one change: fast and found', () => {
+  const L = bigToolpath(70000), R = L.slice();
+  R[35000] = 'X9.9 Y9.9 Z-1.';
+  const t = Date.now();
+  const ops = diff(L, R).ops.filter(o => o.type !== 'equal');
+  eq(ops.length, 1);
+  eq(ops[0].type, 'critical');
+  if (Date.now() - t > 10000) throw new Error('too slow: ' + (Date.now() - t) + ' ms');
+});
+test('70,000-line re-post with tiny changes everywhere: all within tolerance', () => {
+  const L = bigToolpath(70000);
+  const R = L.map(l => l.replace(/^X(\d+\.\d{3})\d/, (m, a) => 'X' + a + '7'));
+  const ops = diff(L, R).ops;
+  eq(ops.filter(o => o.type !== 'equal' && o.type !== 'tolerance').length, 0);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

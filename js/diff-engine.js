@@ -26,6 +26,8 @@ const DiffEngine = (() => {
       semiComments: [],
       macros: [],
       programNumber: null,
+      exprs: {},          // letter -> expression text, e.g. X[#101+1] or X#101
+      isMacroStatement: false, // IF/GOTO/WHILE/#1=SIN[..] style line
       lineNumber: null,
       blockDelete: false,
       isBlank: false,
@@ -44,6 +46,12 @@ const DiffEngine = (() => {
     const src = line;
     const len = src.length;
 
+    // Two letters in a row outside comments means a macro statement
+    // (IF, GOTO, WHILE, DO, END, SIN, ...). Normal G-code words are always
+    // a single letter followed by a number.
+    const codeOnly = src.replace(/\([^)]*\)?/g, ' ').replace(/;.*$/, '');
+    const macroMode = /[A-Za-z]{2,}/.test(codeOnly);
+
     // Block delete may follow leading whitespace
     while (pos < len && /\s/.test(src[pos])) pos++;
     if (src[pos] === '/') {
@@ -56,8 +64,12 @@ const DiffEngine = (() => {
       if (/\s/.test(src[pos])) { pos++; continue; }
 
       if (src[pos] === '(') {
-        const end = src.indexOf(')', pos);
-        const closePos = end >= 0 ? end + 1 : len;
+        // Find the matching ')' (handles nested brackets inside a comment)
+        let depth = 0, closePos = len;
+        for (let q = pos; q < len; q++) {
+          if (src[q] === '(') depth++;
+          else if (src[q] === ')' && --depth === 0) { closePos = q + 1; break; }
+        }
         const text = src.substring(pos, closePos);
         const inner = text.replace(/^\(/, '').replace(/\)$/, '').trim();
         result.comment = result.comment ? result.comment + ' ' + inner : inner;
@@ -74,6 +86,40 @@ const DiffEngine = (() => {
         result.semiComments.push(inner);
         result.tokens.push({ type: 'comment', kind: 'semi', text, start: pos, end: len });
         pos = len;
+        continue;
+      }
+
+      // Macro statement: after an optional N-number, the rest of the code
+      // (up to a comment) is one macro token, compared as text.
+      if (macroMode && !(/[nN]/.test(src[pos]) && /\d/.test(src[pos + 1] || '') &&
+          !result.tokens.some(t => t.type !== 'blockDelete'))) {
+        let q = pos;
+        while (q < len && src[q] !== '(' && src[q] !== ';') q++;
+        const text = src.substring(pos, q).trimEnd();
+        result.isMacroStatement = true;
+        result.macros.push(text);
+        result.tokens.push({ type: 'macro', text, start: pos, end: pos + text.length });
+        pos = q;
+        continue;
+      }
+
+      // Word with an expression value: X[#101+1], X#101, Z-[#5]
+      const exprMatch = src.substring(pos).match(/^([a-zA-Z])\s*(-?\[|-?#\d+)/);
+      if (exprMatch && !/[oO]/.test(src[pos])) {
+        const letter = exprMatch[1].toUpperCase();
+        let q = pos + exprMatch[0].length;
+        if (exprMatch[2].endsWith('[')) {
+          let depth = 1;
+          while (q < len && depth > 0) {
+            if (src[q] === '[') depth++;
+            else if (src[q] === ']') depth--;
+            q++;
+          }
+        }
+        const text = src.substring(pos, q);
+        result.exprs[letter] = text.substring(1).replace(/\s+/g, '').toUpperCase();
+        result.tokens.push({ type: 'expr', text, param: letter, start: pos, end: q });
+        pos = q;
         continue;
       }
 
@@ -107,7 +153,8 @@ const DiffEngine = (() => {
         }
       }
 
-      const tokenMatch = src.substring(pos).match(/^([a-zA-Z])(-?\d+\.?\d*)/);
+      // Letter + number. Accepts .5  -.25  +1.  and a space after the letter (X 1.)
+      const tokenMatch = src.substring(pos).match(/^([a-zA-Z])\s*([+-]?(?:\d+\.?\d*|\.\d+))/);
       if (tokenMatch) {
         const letter = tokenMatch[1].toUpperCase();
         const numStr = tokenMatch[2];
@@ -639,8 +686,10 @@ const DiffEngine = (() => {
     if (parsed.tool !== null) parts.push('T');
     if (parsed.hOffset !== null) parts.push('H');
     if (parsed.dOffset !== null) parts.push('D');
-    // Macros
+    // Macros and expression words
     if (parsed.macros.length > 0) parts.push('#MACRO');
+    const exprLetters = Object.keys(parsed.exprs).sort().join('');
+    if (exprLetters) parts.push('[' + exprLetters + ']');
     // Comment-only lines get their (rule-normalized) text for precise matching.
     // Ignored comment types contribute nothing.
     if (parsed.isCommentOnly) {
@@ -838,6 +887,17 @@ const DiffEngine = (() => {
       }
     }
 
+    // --- Expression words: X[#101+1], X#101 (compared as text) ---
+    const exprKeys = new Set([...Object.keys(parsedA.exprs), ...Object.keys(parsedB.exprs)]);
+    for (const k of exprKeys) {
+      if (parsedA.exprs[k] !== parsedB.exprs[k]) {
+        tokenDiffs.push({ field: 'expr-' + k, severity: 'critical',
+          leftVal: parsedA.exprs[k], rightVal: parsedB.exprs[k],
+          leftTokens: parsedA.tokens.filter(t => t.type === 'expr' && t.param === k),
+          rightTokens: parsedB.tokens.filter(t => t.type === 'expr' && t.param === k) });
+      }
+    }
+
     // --- Block delete: a "/" switches the whole line on/off at the control ---
     if (!rules.ignoreBlockDelete && parsedA.blockDelete !== parsedB.blockDelete) {
       tokenDiffs.push({ field: 'blockDelete', severity: 'critical',
@@ -966,18 +1026,19 @@ const DiffEngine = (() => {
   // LCS Infrastructure
   // =====================================================
 
+  // Above this many DP cells (left x right lines), use Myers diff instead
+  // of the full table, so huge toolpaths don't freeze or crash the browser.
+  const MAX_DP_CELLS = 4000000;
+  const MAX_MYERS_D = 2000;
+
+  /** Plain LCS table (used for small lists like toolpath keys). */
   function buildLCSTable(leftArr, rightArr, n, m) {
     const dp = new Array(n + 1);
-    for (let i = 0; i <= n; i++) {
-      dp[i] = new Uint16Array(m + 1);
-    }
+    for (let i = 0; i <= n; i++) dp[i] = new Int32Array(m + 1);
     for (let i = 1; i <= n; i++) {
       for (let j = 1; j <= m; j++) {
-        if (leftArr[i - 1] === rightArr[j - 1]) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
-        } else {
-          dp[i][j] = dp[i - 1][j] > dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1];
-        }
+        if (leftArr[i - 1] === rightArr[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+        else dp[i][j] = dp[i - 1][j] > dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1];
       }
     }
     return dp;
@@ -999,6 +1060,128 @@ const DiffEngine = (() => {
       }
     }
     return ops.reverse();
+  }
+
+  /**
+   * Weighted LCS: lines with identical text score 2, lines with the same
+   * structure (fingerprint) score 1. Prefers exact matches, so an inserted
+   * move lines up correctly instead of shifting the pairing by one.
+   */
+  function weightedAlign(fpA, fpB, keyA, keyB) {
+    const n = fpA.length, m = fpB.length, W = m + 1;
+    const dp = new Int32Array((n + 1) * (m + 1));
+    const w = (i, j) => keyA[i] === keyB[j] ? 2 : (fpA[i] === fpB[j] ? 1 : 0);
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        const up = dp[(i - 1) * W + j], left = dp[i * W + j - 1];
+        let best = up > left ? up : left;
+        const ww = w(i - 1, j - 1);
+        if (ww > 0) {
+          const diag = dp[(i - 1) * W + j - 1] + ww;
+          if (diag > best) best = diag;
+        }
+        dp[i * W + j] = best;
+      }
+    }
+    const ops = [];
+    let i = n, j = m;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0) {
+        const ww = w(i - 1, j - 1);
+        if (ww > 0 && dp[i * W + j] === dp[(i - 1) * W + j - 1] + ww) {
+          ops.push({ type: 'equal', leftIdx: i - 1, rightIdx: j - 1 });
+          i--; j--; continue;
+        }
+      }
+      if (i > 0 && (j === 0 || dp[(i - 1) * W + j] >= dp[i * W + j - 1])) {
+        ops.push({ type: 'removed', leftIdx: i - 1 }); i--;
+      } else {
+        ops.push({ type: 'added', rightIdx: j - 1 }); j--;
+      }
+    }
+    return ops.reverse();
+  }
+
+  /**
+   * Myers O(ND) diff. Fast when the two lists are mostly the same.
+   * Returns null if more than maxD edits are needed.
+   */
+  function myersAlign(a, b, maxD) {
+    const N = a.length, M = b.length;
+    const off = maxD + 1;
+    const V = new Int32Array(2 * maxD + 3);
+    const trace = [];
+    let found = -1;
+    for (let d = 0; d <= maxD && found < 0; d++) {
+      for (let k = -d; k <= d; k += 2) {
+        let x = (k === -d || (k !== d && V[off + k - 1] < V[off + k + 1])) ? V[off + k + 1] : V[off + k - 1] + 1;
+        let y = x - k;
+        while (x < N && y < M && a[x] === b[y]) { x++; y++; }
+        V[off + k] = x;
+        if (x >= N && y >= M) { found = d; break; }
+      }
+      trace.push(V.slice(off - d, off + d + 1)); // values for k = -d..d
+    }
+    if (found < 0) return null;
+
+    const ops = [];
+    let x = N, y = M;
+    for (let d = found; d > 0; d--) {
+      const prev = trace[d - 1]; // k = -(d-1)..(d-1), index k + d - 1
+      const get = k => prev[k + d - 1];
+      const k = x - y;
+      const prevK = (k === -d || (k !== d && get(k - 1) < get(k + 1))) ? k + 1 : k - 1;
+      const prevX = get(prevK), prevY = prevX - prevK;
+      while (x > prevX && y > prevY) { ops.push({ type: 'equal', leftIdx: x - 1, rightIdx: y - 1 }); x--; y--; }
+      if (prevK === k + 1) ops.push({ type: 'added', rightIdx: prevY });
+      else ops.push({ type: 'removed', leftIdx: prevX });
+      x = prevX; y = prevY;
+    }
+    while (x > 0 && y > 0) { ops.push({ type: 'equal', leftIdx: x - 1, rightIdx: y - 1 }); x--; y--; }
+    return ops.reverse();
+  }
+
+  /**
+   * Line up two segments. Steps:
+   * 1. Identical lines at the start and end are matched directly.
+   * 2. The middle uses weighted LCS when small enough.
+   * 3. Otherwise Myers on exact text, then Myers on structure.
+   * 4. Last resort: pair lines in order (every line still gets compared).
+   */
+  function alignLines(fpA, fpB, keyA, keyB) {
+    const n = fpA.length, m = fpB.length;
+    let pre = 0;
+    while (pre < n && pre < m && keyA[pre] === keyB[pre]) pre++;
+    let suf = 0;
+    while (suf < n - pre && suf < m - pre && keyA[n - 1 - suf] === keyB[m - 1 - suf]) suf++;
+
+    const ops = [];
+    for (let i = 0; i < pre; i++) ops.push({ type: 'equal', leftIdx: i, rightIdx: i });
+
+    const fa = fpA.slice(pre, n - suf), fb = fpB.slice(pre, m - suf);
+    const ka = keyA.slice(pre, n - suf), kb = keyB.slice(pre, m - suf);
+    let mid;
+    if (fa.length * fb.length <= MAX_DP_CELLS) mid = weightedAlign(fa, fb, ka, kb);
+    else mid = myersAlign(ka, kb, MAX_MYERS_D) || myersAlign(fa, fb, MAX_MYERS_D);
+    if (!mid) {
+      mid = [];
+      const common = Math.min(fa.length, fb.length);
+      for (let i = 0; i < common; i++) mid.push({ type: 'equal', leftIdx: i, rightIdx: i });
+      for (let i = common; i < fa.length; i++) mid.push({ type: 'removed', leftIdx: i });
+      for (let j = common; j < fb.length; j++) mid.push({ type: 'added', rightIdx: j });
+    }
+    for (const op of mid) {
+      if (op.leftIdx !== undefined) op.leftIdx += pre;
+      if (op.rightIdx !== undefined) op.rightIdx += pre;
+      ops.push(op);
+    }
+    for (let i = suf; i > 0; i--) ops.push({ type: 'equal', leftIdx: n - i, rightIdx: m - i });
+    return ops;
+  }
+
+  /** Exact-text key for a line (whitespace removed, uppercased). */
+  function lineKey(parsed) {
+    return (parsed.raw || '').replace(/\s+/g, '').toUpperCase();
   }
 
   // =====================================================
@@ -1029,10 +1212,22 @@ const DiffEngine = (() => {
 
     if (leftFP.length === 0 && rightFP.length === 0) return 1.0;
     if (leftFP.length === 0 || rightFP.length === 0) return 0.0;
+    const maxLen = Math.max(leftFP.length, rightFP.length);
+
+    if (leftFP.length * rightFP.length > MAX_DP_CELLS) {
+      // Large toolpaths: count shared line shapes instead of full LCS
+      const counts = new Map();
+      for (const f of leftFP) counts.set(f, (counts.get(f) || 0) + 1);
+      let shared = 0;
+      for (const f of rightFP) {
+        const c = counts.get(f);
+        if (c) { shared++; counts.set(f, c - 1); }
+      }
+      return shared / maxLen;
+    }
 
     const dp = buildLCSTable(leftFP, rightFP, leftFP.length, rightFP.length);
-    const lcsLen = dp[leftFP.length][rightFP.length];
-    return lcsLen / Math.max(leftFP.length, rightFP.length);
+    return dp[leftFP.length][rightFP.length] / maxLen;
   }
 
   /** Indices (into arr) of one longest strictly increasing subsequence. */
@@ -1215,24 +1410,24 @@ const DiffEngine = (() => {
     for (const match of tpMatches) {
       if (match.left && match.right) {
         // Build fingerprints for this segment only
-        const segLeftFP = [], segLeftIdxMap = [];
+        const segLeftFP = [], segLeftKey = [], segLeftIdxMap = [];
         for (let i = match.left.startLine; i <= match.left.endLine; i++) {
           if (leftParsed[i].isBlank) continue;
           segLeftFP.push(fingerprint(leftParsed[i], rules, leftModal[i]));
+          segLeftKey.push(lineKey(leftParsed[i]));
           segLeftIdxMap.push(i);
         }
-        const segRightFP = [], segRightIdxMap = [];
+        const segRightFP = [], segRightKey = [], segRightIdxMap = [];
         for (let i = match.right.startLine; i <= match.right.endLine; i++) {
           if (rightParsed[i].isBlank) continue;
           segRightFP.push(fingerprint(rightParsed[i], rules, rightModal[i]));
+          segRightKey.push(lineKey(rightParsed[i]));
           segRightIdxMap.push(i);
         }
 
         if (segLeftFP.length === 0 && segRightFP.length === 0) continue;
 
-        // Run LCS on this segment
-        const dp = buildLCSTable(segLeftFP, segRightFP, segLeftFP.length, segRightFP.length);
-        const rawOps = backtrackLCS(segLeftFP, segRightFP, dp, segLeftFP.length, segRightFP.length);
+        const rawOps = alignLines(segLeftFP, segRightFP, segLeftKey, segRightKey);
 
         // classifyOps — index maps already point to real line indices
         const segOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed,
@@ -1263,6 +1458,27 @@ const DiffEngine = (() => {
     }
 
     return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches };
+  }
+
+  /** Word letters used on a line, e.g. "G1 X1. F10." -> {G, X, F}. */
+  function wordLetters(parsed) {
+    const set = new Set();
+    for (const t of parsed.tokens) {
+      if (t.type === 'comment' || t.type === 'lineNumber' || t.type === 'blockDelete') continue;
+      if (t.type === 'macro') set.add('#');
+      else set.add(t.text[0].toUpperCase());
+    }
+    return set;
+  }
+
+  /** Two lines are the same kind if they share at least half their word letters. */
+  function sameKind(pa, pb) {
+    if (pa.isCommentOnly && pb.isCommentOnly) return true;
+    const a = wordLetters(pa), b = wordLetters(pb);
+    if (a.size === 0 || b.size === 0) return false;
+    let shared = 0;
+    for (const x of a) if (b.has(x)) shared++;
+    return shared / Math.max(a.size, b.size) >= 0.5;
   }
 
   function oneSidedOp(type, idx, lines, parsed, rules) {
@@ -1307,29 +1523,34 @@ const DiffEngine = (() => {
         i++;
       }
 
-      // Pair removes with adds and classify
-      const pairCount = Math.min(removes.length, adds.length);
-      for (let p = 0; p < pairCount; p++) {
-        const li = leftIdxMap[removes[p].leftIdx];
-        const ri = rightIdxMap[adds[p].rightIdx];
-        const classification = classifyTokens(leftParsed[li], rightParsed[ri], rules, leftModal[li], rightModal[ri]);
-        const type = classification.severity === 'equal' ? 'equal' : classification.severity;
+      // Pair removed lines with added lines only when they are the same kind
+      // of line (share most word letters). Unrelated lines stay as plain
+      // removed / added instead of being compared against each other.
+      let ai = 0, ri = 0;
+      const emitRemoved = upTo => { for (; ri < upTo; ri++) { const li = leftIdxMap[removes[ri].leftIdx]; result.push(oneSidedOp('removed', li, leftLines, leftParsed, rules)); } };
+      const emitAdded = upTo => { for (; ai < upTo; ai++) { const rj = rightIdxMap[adds[ai].rightIdx]; result.push(oneSidedOp('added', rj, rightLines, rightParsed, rules)); } };
+      let searchFrom = 0;
+      for (let r = 0; r < removes.length; r++) {
+        const li = leftIdxMap[removes[r].leftIdx];
+        let match = -1;
+        for (let a = searchFrom; a < adds.length; a++) {
+          if (sameKind(leftParsed[li], rightParsed[rightIdxMap[adds[a].rightIdx]])) { match = a; break; }
+        }
+        if (match < 0) continue;
+        emitRemoved(r);
+        emitAdded(match);
+        const rj = rightIdxMap[adds[match].rightIdx];
+        const classification = classifyTokens(leftParsed[li], rightParsed[rj], rules, leftModal[li], rightModal[rj]);
         result.push({
-          type,
-          leftIdx: li, rightIdx: ri,
-          leftLine: leftLines[li], rightLine: rightLines[ri],
+          type: classification.severity,
+          leftIdx: li, rightIdx: rj,
+          leftLine: leftLines[li], rightLine: rightLines[rj],
           tokenDiffs: classification.tokenDiffs
         });
+        ri = r + 1; ai = match + 1; searchFrom = match + 1;
       }
-
-      for (let p = pairCount; p < removes.length; p++) {
-        const li = leftIdxMap[removes[p].leftIdx];
-        result.push(oneSidedOp('removed', li, leftLines, leftParsed, rules));
-      }
-      for (let p = pairCount; p < adds.length; p++) {
-        const ri = rightIdxMap[adds[p].rightIdx];
-        result.push(oneSidedOp('added', ri, rightLines, rightParsed, rules));
-      }
+      emitRemoved(removes.length);
+      emitAdded(adds.length);
     }
 
     return result;
