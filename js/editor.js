@@ -92,6 +92,11 @@ const Editor = (() => {
     display.addEventListener('mousedown', (e) => {
       if (e.target.closest('.tp-separator')) return;
       e.preventDefault();
+      // Ctrl/Cmd + click on a GOTO / M99 P: jump to its target (hover-help.js)
+      if ((e.ctrlKey || e.metaKey) && ctrlClickCallback) {
+        const pt = pointAt(state, e);
+        if (pt && ctrlClickCallback(pt)) return;
+      }
       const rect = display.getBoundingClientRect();
       const row = Math.max(0, Math.floor((e.clientY - rect.top) / LINE_HEIGHT));
       const line = lineForRow(state, row);
@@ -109,16 +114,8 @@ const Editor = (() => {
     // Hover: report the line and character under the mouse (hover-help.js)
     display.addEventListener('mousemove', (e) => {
       if (!hoverCallback) return;
-      const rect = display.getBoundingClientRect();
-      const row = Math.floor((e.clientY - rect.top) / LINE_HEIGHT);
-      const r = state.rows[row];
-      if (!r || r.kind !== 'line' || e.target.closest('.tp-separator')) { hoverCallback(null); return; }
-      const content = state.windowEl.querySelector('.line-content');
-      if (!content) return;
-      const left = content.getBoundingClientRect().left + parseFloat(getComputedStyle(content).paddingLeft || 0);
-      const col = Math.floor((e.clientX - left) / charWidth(state));
-      hoverCallback({ side, line: r.line, col, text: state.lines[r.line] || '', x: e.clientX, y: e.clientY,
-        rowTop: rect.top + row * LINE_HEIGHT });
+      const pt = pointAt(state, e);
+      hoverCallback(pt);
     });
     display.addEventListener('mouseleave', () => { if (hoverCallback) hoverCallback(null); });
 
@@ -457,7 +454,7 @@ const Editor = (() => {
     const tokenDiffs = (!isDisabled && deco) ? deco.tokenDiffs : null;
     const bgClass = type ? ` diff-bg-${type}` : '';
     const disabledClass = isDisabled ? ' line-disabled' : '';
-    const cursorClass = i === state.cursorLine ? ' cursor-line' : '';
+    const cursorClass = (i === state.cursorLine ? ' cursor-line' : '') + (i === state.flashLine ? ' jump-flash' : '');
     // A trailing \r (Windows line end) would break the row before the value note
     const highlighted = syntaxHighlightLine(state.lines[i].replace(/\r$/, ''), tokenDiffs, state.side);
     const note = state.annotations[i];
@@ -633,7 +630,33 @@ const Editor = (() => {
   }
 
   let hoverCallback = null;
+  let ctrlClickCallback = null;
   function setHoverCallback(fn) { hoverCallback = fn; }
+  function setCtrlClickCallback(fn) { ctrlClickCallback = fn; }
+
+  /** Line, column and screen position under the mouse, or null off a code line. */
+  function pointAt(state, e) {
+    const rect = state.display.getBoundingClientRect();
+    const row = Math.floor((e.clientY - rect.top) / LINE_HEIGHT);
+    const r = state.rows[row];
+    if (!r || r.kind !== 'line' || e.target.closest('.tp-separator')) return null;
+    const content = state.windowEl.querySelector('.line-content');
+    if (!content) return null;
+    const left = content.getBoundingClientRect().left + parseFloat(getComputedStyle(content).paddingLeft || 0);
+    const col = Math.floor((e.clientX - left) / charWidth(state));
+    return { side: state.side, line: r.line, col, text: state.lines[r.line] || '', x: e.clientX, y: e.clientY,
+      rowTop: rect.top + row * LINE_HEIGHT };
+  }
+
+  /** Briefly highlight a line (after a jump). */
+  function flashLine(side, line) {
+    const state = stateFor(side);
+    if (!state) return;
+    state.flashLine = line;
+    renderWindow(state, true);
+    clearTimeout(state.flashTimer);
+    state.flashTimer = setTimeout(() => { state.flashLine = -1; }, 1700);
+  }
 
   function setSeparatorCallbacks(side, callbacks) {
     const state = stateFor(side);
@@ -688,7 +711,7 @@ const Editor = (() => {
 
   return {
     init, getValue, setValue, setFilename, getFilename,
-    setDecorations, setAnnotations, setHoverCallback, scrollToLine, setSyncScroll,
+    setDecorations, setAnnotations, setHoverCallback, setCtrlClickCallback, flashLine, scrollToLine, setSyncScroll,
     setSeparatorCallbacks, setDropdownState, setTolAllActive,
     getDisplayRow, getTotalRows, getLineCount, loadFileInto,
     syntaxHighlightLine

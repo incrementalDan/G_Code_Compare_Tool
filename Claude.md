@@ -317,7 +317,15 @@ line-count mismatch warning (>10% difference); right side: control, units, priva
   - indirect write with unknown index: all unknown. O-number line: new program, all unknown
   - unset vars are unknown, not vacant (machine may hold a value)
 - Adds to parsed lines: `resolved` {letter: value}, `varRefs` {n: value before
-  the line}, `assigned` {index, value}, `macroSkipped`.
+  the line}, `assigned` {index, value}, `macroSkipped`, `jump` {targetN,
+  targetLine, conditional, loop, kind 'goto'|'m99'}, `cond` {value 1/0/undefined,
+  assumed}, `jumpSources` [lines], `alarmStop` (true, or 'maybe' on a / line
+  reached by a tested jump).
+- IF tests: `resolveFile(parsed, { assume })`, assume = Map line -> {raw, value}.
+  Used only while the line text still equals raw. A tested IF counts as sure
+  (also on / lines). app.js keeps `assumptions` per side, passes them as
+  opts.assumeLeft / assumeRight to computeSemanticDiff, lists them in
+  #test-banner (legend strip), prunes edited lines, clears on New / Swap.
 - classifyTokens: letters with an expression on either side are compared once,
   in the expression section (skipped in axis / arc / F / S / T / H / D / param
   checks). Same text + different known value -> critical (exprValue-X).
@@ -333,6 +341,13 @@ line-count mismatch warning (>10% difference); right side: control, units, priva
   Fanuc fallback). Brother #5221+ / #7001+ work offsets, #11000+n tool length,
   #13000+n diameter (from the shop post notes), #3700 tool in spindle.
 - Values come from the last compare (App.getDiffContext), only when the line text still matches.
+- Tip order: title, values (rows), buttons, divider, meaning, explain, wiki link.
+  Values first so experienced users are not slowed down.
+- GOTO / IF / M99 P (flowInfo): test, result, target line, runs next. Buttons:
+  Test TRUE / Test FALSE (only when the result is unknown or being tested),
+  Clear test, Jump to line. N labels (labelInfo): lines that jump here.
+- App.jumpTo(side, line, from): scroll, flash the line, show #jump-back for 15 s.
+  Ctrl/Cmd+click on a GOTO jumps (Editor.setCtrlClickCallback).
 - Each tip links to a page on https://zappettiniconsulting.com/wiki/ (the author
   is a contact of the shop; keep the links pointing at real pages).
 

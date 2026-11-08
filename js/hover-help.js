@@ -258,6 +258,10 @@ const HoverHelp = (() => {
 
     if (tok.type === 'macro') {
       const kw = findAt(text, col, /[A-Za-z]{2,}/g);
+      const KW = kw ? kw[0].toUpperCase() : '';
+      if (full && (full.jump || full.cond) && (!kw || KW === 'IF' || KW === 'GOTO' || KW === 'THEN')) {
+        return flowInfo(side, line, full, text);
+      }
       if (kw && KEYWORDS[kw[0].toUpperCase()]) {
         const [meaning, page] = KEYWORDS[kw[0].toUpperCase()];
         return { title: kw[0].toUpperCase(), meaning, page, rows: macroRows(full) };
@@ -269,6 +273,12 @@ const HoverHelp = (() => {
       const k = codeKey(tok.text);
       const info = G[k] || ['G-code not in this list — check the Brother manual', W.basics];
       return { title: 'G' + k, meaning: info[0], page: info[1], rows: [] };
+    }
+    if (tok.type === 'mCode' && codeKey(tok.text) === 99 && full && full.jump) {
+      return flowInfo(side, line, full, text);
+    }
+    if (tok.type === 'lineNumber' && full && full.jumpSources) {
+      return labelInfo(side, line, full, tok);
     }
     if (tok.type === 'mCode') {
       const k = codeKey(tok.text);
@@ -288,6 +298,108 @@ const HoverHelp = (() => {
       rows.push(['Works out to', fmt(v) + (v === undefined ? ' — a variable has no known value here' : '')]);
     }
     return { title: tok.text.trim(), meaning: info[0], page: info[1], rows };
+  }
+
+  // =====================================================
+  // GOTO / IF / M99 P / N labels
+  // =====================================================
+
+  const EXPLAIN = {
+    goto: 'GOTO n jumps to the line labelled Nn and carries on from there. ' +
+      'IF [test] GOTO n only jumps when the test is true; otherwise the next line runs.',
+    gotoUse: 'Shops use it for checks. Example: if a tool length is out of range, jump to a ' +
+      'line that sets #3000 (an alarm), which stops the machine.',
+    ifThen: 'IF [test] THEN #n = … only sets the variable when the test is true.',
+    m99: 'M99 Pn: in a main program, go back to line Nn instead of the top. ' +
+      'In a subprogram, return to the caller at line Nn.',
+    label: 'N number used as a jump label. A GOTO or M99 P elsewhere jumps here.'
+  };
+
+  /** Next line after i that has something on it (for "test as FALSE"). */
+  function nextLine(side, i) {
+    const ctx = typeof App !== 'undefined' && App.getDiffContext ? App.getDiffContext() : null;
+    const arr = ctx ? (side === 'left' ? ctx.leftParsed : ctx.rightParsed) : null;
+    let k = i + 1;
+    while (arr && k < arr.length - 1 && arr[k].isBlank) k++;
+    return k;
+  }
+
+  /** Text of the test, e.g. "[#11032 LT 7.3086]". */
+  function condText(text) {
+    const m = text.replace(/\([^)]*\)?/g, '').match(/IF\s*(\[.*\])\s*(GOTO|THEN)/i);
+    return m ? m[1].replace(/\s+/g, ' ') : '';
+  }
+
+  /** Why a test could not be worked out: the unknown variables it reads. */
+  function unknownVars(full) {
+    if (!full.varRefs) return '';
+    const names = Object.keys(full.varRefs).filter(k => full.varRefs[k] === undefined)
+      .slice(0, 2).map(k => '#' + k + ' (' + varInfo(+k)[0].split(' — ')[0] + ')');
+    return names.length ? ' — uses ' + names.join(', ') + ', which only the machine knows' : '';
+  }
+
+  function flowInfo(side, line, full, text) {
+    const rows = [];
+    const actions = [];
+    const j = full.jump;
+    const c = full.cond;
+    const isThen = !!c && !j;
+    const next = nextLine(side, line);
+
+    if (full.macroSkipped) rows.push(['Runs?', 'No — jumped over by an earlier GOTO']);
+    if (c) {
+      rows.push(['Test', condText(text) || '[…]']);
+      rows.push(['Result', c.assumed ? (c.value ? 'TRUE — you are testing this' : 'FALSE — you are testing this')
+        : c.value === 1 ? 'true' : c.value === 0 ? 'false' : 'unknown' + unknownVars(full)]);
+    }
+    if (j) {
+      rows.push(['Jumps to', j.targetLine >= 0 ? `N${j.targetN} \u2192 line ${j.targetLine + 1}${j.loop ? ' (back up — a loop)' : ''}`
+        : `N${j.targetN} — not found in this program`]);
+      if (j.targetLine >= 0) {
+        if (!j.conditional || (c && c.value === 1)) rows.push(['Runs next', `line ${j.targetLine + 1} (jumps)`]);
+        else if (c && c.value === 0) rows.push(['Runs next', `line ${next + 1} (no jump)`]);
+        else rows.push(['Runs next', `line ${j.targetLine + 1} if true, line ${next + 1} if false`]);
+      }
+    }
+    if (isThen && full.assigned) {
+      rows.push(['Sets', (full.assigned.index !== undefined ? '#' + full.assigned.index : '#?') + ' = ' +
+        fmt(full.assigned.value) + (c.value === undefined ? ' (only if true)' : c.value ? '' : ' (skipped — false)')]);
+    }
+
+    // Test buttons for a test only the machine can answer (or one already being tested)
+    if (c && (c.value === undefined || c.assumed)) {
+      const tTarget = j && j.targetLine >= 0 ? j.targetLine : null;
+      if (!(c.assumed && c.value === 1)) {
+        actions.push({ label: 'Test TRUE' + (tTarget !== null ? ` \u2192 line ${tTarget + 1}` : ''), cls: 'ht-true',
+          act: 'assume', value: 1, side, line, go: tTarget });
+      }
+      if (!(c.assumed && c.value === 0)) {
+        actions.push({ label: 'Test FALSE' + (j ? ` \u2192 line ${next + 1}` : ''), cls: 'ht-false',
+          act: 'assume', value: 0, side, line, go: j ? next : null });
+      }
+      if (c.assumed) actions.push({ label: 'Clear test', cls: 'ht-plain', act: 'assume', value: -1, side, line, go: null });
+    }
+    if (j && j.targetLine >= 0) {
+      actions.push({ label: `Jump to line ${j.targetLine + 1} \u2192`, cls: '', act: 'jump', side, line, go: j.targetLine });
+    }
+
+    const kind = j ? (j.kind === 'm99' ? 'm99' : 'goto') : 'ifThen';
+    return {
+      title: j ? (j.kind === 'm99' ? 'M99 P' + j.targetN : (j.conditional ? 'IF … GOTO ' : 'GOTO ') + j.targetN) : 'IF … THEN',
+      rows, actions,
+      meaning: EXPLAIN[kind],
+      explain: kind === 'goto' ? EXPLAIN.gotoUse : '',
+      page: kind === 'm99' ? W.macroStruct : W.macroCtl,
+      ctrlJump: j && j.targetLine >= 0 ? j.targetLine : null
+    };
+  }
+
+  function labelInfo(side, line, full, tok) {
+    const src = full.jumpSources;
+    const rows = [['Jumped to from', src.slice(0, 6).map(i => 'line ' + (i + 1)).join(', ') + (src.length > 6 ? ' …' : '')]];
+    const actions = src.slice(0, 4).map(i => ({ label: `\u2190 Go to line ${i + 1}`, cls: 'ht-plain', act: 'jump', side, line, go: i }));
+    return { title: tok.text.trim().toUpperCase(), rows, actions, meaning: EXPLAIN.label, explain: '', page: W.macroCtl,
+      ctrlJump: null };
   }
 
   function macroRows(full) {
@@ -327,18 +439,42 @@ const HoverHelp = (() => {
     tipEl = document.createElement('div');
     tipEl.id = 'hover-tip';
     tipEl.setAttribute('role', 'tooltip');
-    tipEl.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+    tipEl.addEventListener('mouseenter', () => { clearTimeout(hideTimer); clearTimeout(showTimer); });
+    tipEl.addEventListener('click', (e) => {
+      const b = e.target.closest('.ht-btn');
+      if (!b) return;
+      const a = tipActions[+b.dataset.i];
+      hide();
+      if (a) runAction(a);
+    });
     tipEl.addEventListener('mouseleave', () => scheduleHide());
     document.body.appendChild(tipEl);
     return tipEl;
   }
 
+  let tipActions = [];
+
   function render(info, x, rowTop) {
     const el = ensureTip();
-    let html = `<div class="ht-title">${esc(info.title)}</div><div class="ht-meaning">${esc(info.meaning)}</div>`;
-    for (const [k, v] of info.rows) html += `<div class="ht-row"><span class="ht-key">${esc(k)}:</span> ${esc(v)}</div>`;
+    let html = `<div class="ht-title">${esc(info.title)}</div>`;
+    // 1. Values (what experienced users want at a glance)
+    if (info.rows.length) {
+      html += '<div class="ht-rows">';
+      for (const [k, v] of info.rows) html += `<div class="ht-row"><span class="ht-key">${esc(k)}:</span> ${esc(v)}</div>`;
+      html += '</div>';
+    }
+    // 2. Buttons: jump, test as true / false
+    tipActions = info.actions || [];
+    if (tipActions.length) {
+      html += '<div class="ht-actions">' + tipActions.map((a, i) =>
+        `<button class="ht-btn ${a.cls || ''}" data-i="${i}">${esc(a.label)}</button>`).join('') + '</div>';
+    }
+    // 3. Explanation, then 4. wiki link at the bottom
+    if (info.rows.length || tipActions.length) html += '<div class="ht-divider"></div>';
+    html += `<div class="ht-meaning">${esc(info.meaning)}</div>`;
+    if (info.explain) html += `<div class="ht-explain">${esc(info.explain)}</div>`;
     if (info.page) {
-      html += `<a class="ht-link" href="${WIKI}${info.page}" target="_blank" rel="noopener noreferrer">More on the Zappettini CNC wiki →</a>`;
+      html += `<a class="ht-link" href="${WIKI}${info.page}" target="_blank" rel="noopener noreferrer">More on the Zappettini CNC wiki \u2192</a>`;
     }
     el.innerHTML = html;
     el.classList.add('visible');
@@ -349,6 +485,21 @@ const HoverHelp = (() => {
     if (top + h > window.innerHeight - 8) top = rowTop - h - 4;
     el.style.left = Math.max(8, left) + 'px';
     el.style.top = Math.max(8, top) + 'px';
+  }
+
+  function runAction(a) {
+    if (typeof App === 'undefined') return;
+    if (a.act === 'assume') App.setAssumption(a.side, a.line, a.value < 0 ? null : !!a.value);
+    if (a.go !== null && a.go !== undefined) App.jumpTo(a.side, a.go, a.line);
+  }
+
+  /** Ctrl/Cmd + click on a GOTO / M99 P: jump straight to its target. */
+  function onCtrlClick(pt) {
+    const info = lookup(pt.side, pt.line, pt.text, pt.col);
+    if (!info || info.ctrlJump === null || info.ctrlJump === undefined) return false;
+    hide();
+    App.jumpTo(pt.side, info.ctrlJump, pt.line);
+    return true;
   }
 
   function hide() {
@@ -378,6 +529,7 @@ const HoverHelp = (() => {
   function init() {
     if (typeof Editor === 'undefined' || !Editor.setHoverCallback) return;
     Editor.setHoverCallback(onHover);
+    if (Editor.setCtrlClickCallback) Editor.setCtrlClickCallback(onCtrlClick);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
     window.addEventListener('scroll', hide, true);
   }

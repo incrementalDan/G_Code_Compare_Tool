@@ -1846,8 +1846,8 @@ const DiffEngine = (() => {
     markJumpTargets(rightParsed);
     // Work out #variable values so X#101 can be compared as a number
     if (typeof MacroEval !== 'undefined') {
-      MacroEval.resolveFile(leftParsed);
-      MacroEval.resolveFile(rightParsed);
+      MacroEval.resolveFile(leftParsed, { assume: opts.assumeLeft });
+      MacroEval.resolveFile(rightParsed, { assume: opts.assumeRight });
     }
 
     // Segment into toolpaths

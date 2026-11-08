@@ -771,6 +771,43 @@ html, body {
   white-space: pre;
 }
 
+/* ===== IF tests (legend strip) and jump back button ===== */
+#test-banner {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ffcc66;
+  font-family: var(--font-mono);
+}
+#test-banner[hidden] { display: none; }
+#test-banner button, #jump-back {
+  background: #3a3a3d;
+  color: var(--text);
+  border: 1px solid #555;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+#test-banner button:hover, #jump-back:hover { background: #4a4a4f; }
+#jump-back {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2500;
+  padding: 5px 12px;
+  font-size: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+}
+#jump-back[hidden] { display: none; }
+.editor-line.jump-flash { animation: jumpFlash 1.6s ease-out; }
+@keyframes jumpFlash {
+  0%, 40% { background: rgba(79, 193, 255, 0.35); }
+  100% { background: transparent; }
+}
+
 /* ===== Hover help tooltip ===== */
 #hover-tip {
   position: fixed;
@@ -791,6 +828,18 @@ html, body {
 #hover-tip .ht-meaning { margin-bottom: 4px; }
 #hover-tip .ht-row { font-family: var(--font-mono); font-size: 11px; color: #ddd; }
 #hover-tip .ht-key { color: var(--text-dim); font-family: inherit; }
+#hover-tip .ht-explain { color: #bdbdbd; font-size: 11px; margin-bottom: 4px; }
+#hover-tip .ht-rows { margin: 4px 0 6px; }
+#hover-tip .ht-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+#hover-tip .ht-btn {
+  background: #0e639c; color: #fff; border: none; border-radius: 4px;
+  font-size: 11px; padding: 3px 8px; cursor: pointer; font-family: inherit;
+}
+#hover-tip .ht-btn:hover { background: #1177bb; }
+#hover-tip .ht-btn.ht-true { background: #2e7d32; }
+#hover-tip .ht-btn.ht-false { background: #8e3b3b; }
+#hover-tip .ht-btn.ht-plain { background: #3a3a3d; border: 1px solid #555; }
+#hover-tip .ht-divider { border-top: 1px solid #444; margin: 6px 0 4px; }
 #hover-tip .ht-link { display: inline-block; margin-top: 6px; color: #4fc1ff; text-decoration: none; font-size: 11px; }
 #hover-tip .ht-link:hover { text-decoration: underline; }
 

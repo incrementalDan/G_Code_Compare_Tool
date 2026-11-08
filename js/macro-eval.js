@@ -376,16 +376,25 @@ const MacroEval = (() => {
    *   p.varRefs  = { 101: 1.5, ... }  value of each #n read on the line, before it runs
    *   p.assigned = { index, value }   what an assignment line wrote (value undefined = unknown)
    *   p.macroSkipped = true           line jumped over by a GOTO that is known to be taken
+   *   p.jump = { targetN, targetLine, conditional, loop, kind }   GOTO / M99 P jump
+   *   p.cond = { value, assumed }     IF condition: 1 / 0 / undefined (unknown)
+   *   p.jumpSources = [line, ...]     lines that jump to this N label
+   *   p.alarmStop = true | 'maybe'    #3000 = n runs here: the machine stops with an alarm
+   *
+   * opts.assume: Map line -> { raw, value: true|false } — "test this IF as true / false".
+   * Used only when the line text still matches raw.
    */
-  function resolveFile(parsedLines) {
+  function resolveFile(parsedLines, opts) {
     const n = parsedLines.length;
     const stmts = new Array(n);
     const codes = new Array(n);
+    const assume = (opts && opts.assume) || null;
     let any = false;
 
     for (let i = 0; i < n; i++) {
       const p = parsedLines[i];
       delete p.resolved; delete p.varRefs; delete p.assigned; delete p.macroSkipped;
+      delete p.jump; delete p.cond; delete p.jumpSources; delete p.alarmStop;
       if (p.isBlank || p.isCommentOnly) { stmts[i] = { kind: 'none' }; codes[i] = ''; continue; }
       let code = codeText(p.raw);
       if (code[0] === '/') code = code.substring(1);
@@ -399,7 +408,9 @@ const MacroEval = (() => {
       any = true;
       stmts[i] = readStatement(code);
     }
-    if (!any) return;
+    const hasM99P = parsedLines.some(p => p.mCodes.some(m => parseFloat(m.substring(1)) === 99) &&
+      p.tokens.some(t => t.type === 'param' && t.param === 'P'));
+    if (!any && !hasM99P) return;
 
     // --- Program blocks (O-number lines start a new program) ---
     const progStart = new Int32Array(n);
@@ -425,6 +436,33 @@ const MacroEval = (() => {
       for (const li of list) if (li >= progStart[from] && progStart[li] === progStart[from]) return li;
       return -1;
     }
+
+    // --- Jumps with a fixed target: GOTO n, IF[..]GOTO n, M99 Pn ---
+    const addJump = (i, targetN, conditional, kind) => {
+      const t = findLabel(i, targetN);
+      parsedLines[i].jump = { targetN, targetLine: t, conditional, loop: t >= 0 && t <= i, kind };
+      if (t >= 0) (parsedLines[t].jumpSources = parsedLines[t].jumpSources || []).push(i);
+    };
+    for (let i = 0; i < n; i++) {
+      const s = stmts[i];
+      if (s.kind === 'goto' && s.target.num !== undefined) addJump(i, Math.round(s.target.num), !!s.cond, 'goto');
+      const p = parsedLines[i];
+      if (p.mCodes.some(m => parseFloat(m.substring(1)) === 99)) {
+        const pt = p.tokens.find(t => t.type === 'param' && t.param === 'P');
+        if (pt) addJump(i, Math.round(pt.value), false, 'm99');
+      }
+    }
+    if (!any) return;
+
+    /** IF condition at line i: a test choice from the user wins over the worked-out value. */
+    const condAt = (i, s, p) => {
+      const a = assume && assume.get(i);
+      if (a && a.raw === p.raw) { p.cond = { value: a.value ? 1 : 0, assumed: true }; return { c: a.value ? 1 : 0, sure: true }; }
+      const c = evaluate(s.cond, get);
+      const v = c === undefined ? undefined : (num0(c) ? 1 : 0);
+      p.cond = { value: v, assumed: false };
+      return { c: v, sure: !p.blockDelete };
+    };
 
     // --- What each line may change: a variable number, 'ALL', 'COMMON' or null ---
     function writes(i) {
@@ -487,6 +525,7 @@ const MacroEval = (() => {
       }
     };
     let skipTo = -1;
+    let testTarget = -1; // label line reached by a jump the user is testing as TRUE
 
     for (let i = 0; i < n; i++) {
       const p = parsedLines[i];
@@ -511,6 +550,10 @@ const MacroEval = (() => {
         const v = clean(evaluate(valueTree, get));
         if (k === undefined) { store.clear(); p.assigned = { index: undefined, value: v }; return; }
         p.assigned = { index: k, value: v };
+        // #3000 = n stops the machine (unless a / line is skipped by Block Skip)
+        if (k === 3000 && typeof v === 'number' && v !== 0 && (sure || i === testTarget)) {
+          p.alarmStop = sure ? true : 'maybe';
+        }
         if (sure) set(k, v);
         else if (get(k) !== v) set(k, undefined); // might or might not happen
       };
@@ -520,19 +563,20 @@ const MacroEval = (() => {
           write(s.index, s.value, !maybe);
           break;
         case 'if-then': {
-          const c = evaluate(s.cond, get);
-          if (c === undefined || maybe) write(s.index, s.value, false);
-          else if (num0(c)) write(s.index, s.value, true);
+          const { c, sure } = condAt(i, s, p);
+          if (c === undefined || !sure) write(s.index, s.value, false);
+          else if (c) write(s.index, s.value, true);
           break;
         }
         case 'goto': {
           const tv = evaluate(s.target, get);
-          const c = s.cond ? evaluate(s.cond, get) : 1;
+          const { c, sure } = s.cond ? condAt(i, s, p) : { c: 1, sure: !maybe };
           if (typeof tv !== 'number') { store.clear(); break; }
           const t = findLabel(i, Math.round(tv));
+          if (!p.jump) p.jump = { targetN: Math.round(tv), targetLine: t, conditional: !!s.cond, loop: t >= 0 && t <= i, kind: 'goto' };
           if (t < 0 || t <= i) break; // missing label, or a loop (handled above)
-          if (c === undefined || maybe) addForget(t, writesIn(i + 1, t - 1));
-          else if (num0(c)) skipTo = t;
+          if (c === undefined || !sure) addForget(t, writesIn(i + 1, t - 1));
+          else if (c) { skipTo = t; if (p.cond && p.cond.assumed) testTarget = t; }
           break;
         }
         case 'while': case 'end':

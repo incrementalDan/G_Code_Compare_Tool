@@ -451,5 +451,42 @@ test('same text, different value is critical on the move line', () => {
 test('unknown value vs number stays critical', () =>
   eq(types(['G1 X#5221'], ['G1 X1.5']), 'critical'));
 
+console.log('\nJumps and IF tests');
+function resolveA(lines, assume) {
+  const P = lines.map(l => DE.parseGCodeLine(l));
+  ctx.MacroEval.resolveFile(P, { assume });
+  return P;
+}
+const tl = ['#1=1', 'IF[#11032LT7.3]GOTO20', '#2=5', 'G1 X#2', 'N20 #3000=32', 'G1 Y#1'];
+test('GOTO records its target line', () => {
+  const P = resolveA(tl);
+  eq(P[1].jump.targetLine + ' ' + P[1].jump.conditional + ' ' + P[4].jumpSources.join(','), '4 true 1');
+});
+test('unknown condition is reported', () => eq(resolveA(tl)[1].cond.value, undefined));
+test('test as TRUE: jumped lines skipped, alarm stops', () => {
+  const P = resolveA(tl, new Map([[1, { raw: tl[1], value: true }]]));
+  eq([P[1].cond.assumed, !!P[2].macroSkipped, !!P[3].macroSkipped, P[4].alarmStop].join(','), 'true,true,true,true');
+});
+test('test as FALSE: next line runs, value known', () => {
+  const P = resolveA(tl, new Map([[1, { raw: tl[1], value: false }]]));
+  eq(P[3].resolved.X, 5);
+});
+test('test ignored when the line text changed', () => {
+  const P = resolveA(tl, new Map([[1, { raw: 'something else', value: true }]]));
+  eq(P[1].cond.assumed, false);
+});
+test('no alarm note on a / line without a test', () => {
+  const L = ['/ IF[#11032LT7.3]GOTO20', '/ GOTO 30', '/ N20 #3000=32', '/ N30'];
+  eq(resolveA(L)[2].alarmStop, undefined);
+});
+test('M99 P records its jump', () => {
+  const P = resolveA(['N10 G0 X0.', 'M99 P10']);
+  eq(P[1].jump.targetLine + ' ' + P[1].jump.kind, '0 m99');
+});
+test('IF THEN can be tested', () => {
+  const L = ['#2=1', 'IF[#5221GT0]THEN#2=7', 'G0 X#2'];
+  eq(resolveA(L, new Map([[1, { raw: L[1], value: true }]]))[2].resolved.X, 7);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

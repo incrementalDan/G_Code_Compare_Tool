@@ -254,7 +254,15 @@ const Info = (() => {
       block delete <code>/</code> lines, and common variables (#100+) after <code>G65</code>, <code>G66</code>, <code>M06</code>.
       After <code>M98</code> everything is unknown.</li>
     <li><b>Skipped</b> lines (jumped over by a GOTO that is known to be taken) are marked <code>↷ skipped by GOTO</code>.</li>
+    <li><b>IF lines</b> show their result: <code>→ true</code>, <code>→ false</code> or <code>→ ?</code> (needs a machine value).</li>
   </ul>
+  <h4>Test an IF <span class="info-where">hover the IF or GOTO</span></h4>
+  <p>When only the machine knows the answer (e.g. <code>IF[#11032 LT 7.3086]</code> reads the tool length),
+  the tip offers <b>Test TRUE</b> and <b>Test FALSE</b>. The tool then treats that IF as your choice:
+  values below update, jumped lines are marked skipped, an alarm line reached by the jump shows
+  <code>⛔ alarm stops the program here</code>, and it jumps you to the line that would run next.
+  Active tests are listed in the legend strip (<code>L35 = TRUE ✕</code>); click one to clear it, or <b>Clear all</b>.
+  Tests also change what is compared. Editing that line, <b>New</b> or <b>Swap Panes</b> clears them.</p>
   <p class="info-note">Loops are not run. When the tool is not sure, the value is unknown and the change stays red.</p>
 </section>
 
@@ -264,6 +272,14 @@ const Info = (() => {
   Variables show their value on that line. Each tip links to the matching page on the
   <a href="https://zappettiniconsulting.com/wiki" target="_blank" rel="noopener noreferrer">Zappettini Consulting CNC wiki</a>.
   Meanings are for a Brother mill (Fanuc as backup). <kbd>Esc</kbd> closes a tip.</p>
+  <p>Each tip shows the <b>values first</b>, then buttons, then the explanation and the wiki link.</p>
+  <h4>Jumps</h4>
+  <ul class="info-list">
+    <li><b>GOTO / IF … GOTO / M99 P</b>: the tip shows the target line, the test result and which line runs next.
+      <b>Jump to line …</b> takes you there. <kbd>Ctrl</kbd>+click (<kbd>⌘</kbd>+click on Mac) jumps straight away.</li>
+    <li><b>N label</b> (e.g. <code>N98032</code>): the tip lists the lines that jump to it.</li>
+    <li>After a jump, <b>← Back to line …</b> appears at the bottom for 15 seconds.</li>
+  </ul>
 </section>
 
 <section id="info-limits" class="info-card info-warn">
@@ -304,7 +320,8 @@ const Info = (() => {
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
       Warns if line counts differ by more than 10%. Right side: control, units per file
       (G20 inch / G21 mm — red if they differ), and the pane, line and column of the cursor.</td></tr>
-    <tr><td>Hover</td><td>Point at any code for its meaning and a wiki link.</td></tr>
+    <tr><td>Hover</td><td>Point at any code for its value, meaning and a wiki link.</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+click a GOTO</td><td>Jump to the line it goes to. <b>← Back</b> returns.</td></tr>
     <tr><td>Feeds &amp; Speeds</td><td>Per-toolpath table of RPM and feeds, left vs right.</td></tr>
     <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file.</td></tr>
   </table>

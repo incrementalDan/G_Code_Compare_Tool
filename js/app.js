@@ -28,6 +28,8 @@ const App = (() => {
   let lastDiffResult = null; // full engine result (parsed lines, toolpaths) for Feeds & Speeds
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
+  // "Test this IF as true / false" choices: line -> { raw, value } per side
+  let assumptions = { left: new Map(), right: new Map() };
 
   // === Example data ===
   const EXAMPLE_LEFT = `O1000 (PART PROGRAM - KNOWN GOOD)
@@ -121,6 +123,7 @@ N120 M30`;
     bindButtons();
     bindSettings();
     bindKeyboard();
+    bindJumpUi();
 
     // Restore filenames
     let lf = null, rf = null;
@@ -429,8 +432,19 @@ N120 M30`;
     const leftLines = leftText.split('\n');
     const rightLines = rightText.split('\n');
 
+    // Drop IF tests whose line was edited or moved
+    let pruned = false;
+    for (const [side, lines] of [['left', leftLines], ['right', rightLines]]) {
+      for (const [line, a] of assumptions[side]) {
+        if (lines[line] !== a.raw) { assumptions[side].delete(line); pruned = true; }
+      }
+    }
+    if (pruned) updateTestBanner();
+
     // Run semantic diff engine
     const diffResult = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
+      assumeLeft: assumptions.left,
+      assumeRight: assumptions.right,
       rules: settings,
       minorThreshold: settings.minorThreshold,
       majorThreshold: settings.majorThreshold
@@ -463,18 +477,24 @@ N120 M30`;
   /** "→ X1.5 Y?" after a line that uses #variables; "= 4" after an assignment. */
   function lineNote(p) {
     if (p.macroSkipped) return '  \u21b7 skipped by GOTO';
+    const parts = [];
+    if (p.cond) {
+      parts.push(p.cond.assumed ? (p.cond.value ? 'TRUE (testing)' : 'FALSE (testing)')
+        : p.cond.value === 1 ? 'true' : p.cond.value === 0 ? 'false' : '?');
+    }
     if (p.resolved) {
-      const parts = Object.keys(p.resolved).map(L => L + fmtValue(p.resolved[L]));
-      if (parts.length) return '  \u2192 ' + parts.join(' ');
+      for (const L of Object.keys(p.resolved)) parts.push(L + fmtValue(p.resolved[L]));
     }
     if (p.assigned) {
       // Plain "#101=1.5" needs no note; "#102=#101*2" does
       const rhs = p.raw.replace(/\([^)]*\)?/g, '').replace(/;.*$/, '').split('=').slice(1).join('=').trim();
-      if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(rhs) && p.assigned.index !== undefined) return '';
-      const target = p.assigned.index !== undefined ? '#' + p.assigned.index : '#?';
-      return '  \u2192 ' + target + ' = ' + fmtValue(p.assigned.value);
+      const plain = /^[+-]?(\d+\.?\d*|\.\d+)$/.test(rhs) && p.assigned.index !== undefined;
+      if (!plain) parts.push((p.assigned.index !== undefined ? '#' + p.assigned.index : '#?') + ' = ' + fmtValue(p.assigned.value));
     }
-    return '';
+    let note = parts.length ? '  \u2192 ' + parts.join(' ') : '';
+    if (p.alarmStop) note += p.alarmStop === true ? '  \u26d4 alarm stops the program here'
+      : '  \u26d4 alarm stops the program here (if this / line runs)';
+    return note;
   }
 
   function annotationsFor(parsed) {
@@ -482,11 +502,75 @@ N120 M30`;
     if (!parsed) return out;
     for (let i = 0; i < parsed.length; i++) {
       const p = parsed[i];
-      if (!p.resolved && !p.assigned && !p.macroSkipped) continue;
+      if (!p.resolved && !p.assigned && !p.macroSkipped && !p.cond && !p.alarmStop) continue;
       const note = lineNote(p);
       if (note) out[i] = note;
     }
     return out;
+  }
+
+  // === IF tests ("what if this condition is true / false") ===
+  function setAssumption(side, line, value) {
+    const lines = Editor.getValue(side).split('\n');
+    if (line < 0 || line >= lines.length) return;
+    if (value === null) assumptions[side].delete(line);
+    else assumptions[side].set(line, { raw: lines[line], value: !!value });
+    runDiff();
+    updateTestBanner();
+  }
+
+  function clearAssumptions(rerun) {
+    const had = assumptions.left.size + assumptions.right.size > 0;
+    assumptions = { left: new Map(), right: new Map() };
+    updateTestBanner();
+    if (had && rerun) runDiff();
+  }
+
+  function updateTestBanner() {
+    const el = document.getElementById('test-banner');
+    if (!el) return;
+    const items = [];
+    for (const side of ['left', 'right']) {
+      for (const [line, a] of [...assumptions[side].entries()].sort((x, y) => x[0] - y[0])) {
+        items.push(`<button data-side="${side}" data-line="${line}" title="Clear this test">` +
+          `${side === 'left' ? 'L' : 'R'}${line + 1} = ${a.value ? 'TRUE' : 'FALSE'} \u2715</button>`);
+      }
+    }
+    if (!items.length) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    el.innerHTML = `<span title="Values below these lines follow your choice">Testing IF:</span>${items.join('')}` +
+      `<button data-clear-all="1">Clear all</button>`;
+  }
+
+  // === Jumping (GOTO / M99 P targets) ===
+  let backTimer = null;
+  function jumpTo(side, line, fromLine) {
+    Editor.scrollToLine(side, line);
+    Editor.flashLine(side, line);
+    const btn = document.getElementById('jump-back');
+    if (!btn) return;
+    clearTimeout(backTimer);
+    if (fromLine === undefined || fromLine === null || fromLine === line) { btn.hidden = true; return; }
+    btn.textContent = `\u2190 Back to line ${fromLine + 1}`;
+    btn.dataset.side = side;
+    btn.dataset.line = fromLine;
+    btn.hidden = false;
+    backTimer = setTimeout(() => { btn.hidden = true; }, 15000);
+  }
+
+  function bindJumpUi() {
+    const back = document.getElementById('jump-back');
+    if (back) back.addEventListener('click', () => {
+      back.hidden = true;
+      jumpTo(back.dataset.side, parseInt(back.dataset.line, 10));
+    });
+    const banner = document.getElementById('test-banner');
+    if (banner) banner.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.clearAll) clearAssumptions(true);
+      else setAssumption(b.dataset.side, parseInt(b.dataset.line, 10), null);
+    });
   }
 
   function applyAnnotations() {
@@ -819,6 +903,7 @@ N120 M30`;
     disabledToolpathIds.clear();
     toleranceOffIds.clear();
     Editor.setTolAllActive(true);
+    clearAssumptions(false);
     lastDiffResult = null;
     clearDecorations();
     applyAnnotations();
@@ -831,7 +916,8 @@ N120 M30`;
     const leftName = Editor.getFilename('left');
     const rightName = Editor.getFilename('right');
 
-    // Sides flip, so per-toolpath choices no longer apply
+    // Sides flip, so per-toolpath choices and IF tests no longer apply
+    clearAssumptions(false);
     disabledToolpathIds.clear();
     toleranceOffIds.clear();
     currentToolpaths = { left: [], right: [] };
@@ -903,5 +989,5 @@ N120 M30`;
     return lastDiffResult;
   }
 
-  return { runDiff, loadExample, getDiffContext };
+  return { runDiff, loadExample, getDiffContext, setAssumption, jumpTo };
 })();
