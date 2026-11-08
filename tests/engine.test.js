@@ -6,8 +6,10 @@ const vm = require('vm');
 const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'diff-engine.js'), 'utf8');
 const ctx = {};
 const feedsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'feeds.js'), 'utf8');
-vm.runInNewContext(src + '\n' + feedsSrc + '\nthis.DiffEngine = DiffEngine; this.Feeds = Feeds;', ctx);
+const toolsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'tools.js'), 'utf8');
+vm.runInNewContext(src + '\n' + feedsSrc + '\n' + toolsSrc + '\nthis.DiffEngine = DiffEngine; this.Feeds = Feeds; this.Tools = Tools;', ctx);
 const DE = ctx.DiffEngine;
+const TL = ctx.Tools;
 const FD = ctx.Feeds;
 
 const DEFAULT_RULES = {
@@ -355,6 +357,62 @@ test('real file: O1268 header tool OOH change caught', () => {
   const R = L.slice(); R[10] = R[10].replace('OOH=0.75', 'OOH=0.80');
   const ops = diff(L, R).ops.filter(o => o.type !== 'equal');
   eq(ops.map(o => o.type + ':' + o.leftIdx).join(','), 'critical:10');
+});
+
+console.log('\nFixture and Tool Table');
+test('fixture change caught when both files have one', () =>
+  eq(opAt(['(PART)', '(FIXTURE = F57)', 'G0 X0.'], ['(PART)', '(FIXTURE = F58)', 'G0 X0.'], 1), 'critical'));
+test('fixture missing in one file is not flagged', () => {
+  const ops = diff(['(PART)', '(FIXTURE = F57)', '(MACHINE)', 'G0 X0.'], ['(PART)', '(MACHINE)', 'G0 X0.']).ops;
+  eq(ops.filter(o => o.alwaysShow).length, 0);
+});
+test('fixture does not pair with another header comment', () => {
+  const ops = diff(['(PART A)', '(FIXTURE = F57)', 'G0 X0.'], ['(PART B)', '(POSTED 1.1)', 'G0 X0.']).ops;
+  eq(ops.filter(o => o.alwaysShow).length, 0);
+});
+test('parse new-layout tool line', () => {
+  const t = TL.parseToolComment('T33 - ID=A-176 = 1/8 ENDMILL 3FL .4375LOC UNCOATED - OOH=0.75 - HLDR=NBT30-SK13-90 ER16 EX 2.35OOH 12MM -LC-');
+  eq([t.tool, t.id, t.desc, t.ooh, t.holder, t.lc].join('|'), '33|A-176|1/8 ENDMILL 3FL .4375LOC UNCOATED|0.75|NBT30-SK13-90 ER16 EX 2.35OOH 12MM|');
+});
+test('parse old-layout tool line (PRODID)', () => {
+  const t = TL.parseToolComment('T51 - 3/8 ROUGHER EM 7FL 1.0LOC - HLDR=NBT30-SK13C-90 85MM - OOH=1.2 - PRODID=A-61 -LC-72');
+  eq([t.tool, t.id, t.desc, t.ooh, t.holder, t.lc].join('|'), '51|A-61|3/8 ROUGHER EM 7FL 1.0LOC|1.2|NBT30-SK13C-90 85MM|72');
+});
+test('parse multi-part description', () =>
+  eq(TL.parseToolComment('T62 - ID=A-182 = 3/8 AXFPS BULL - ROUGHER - OOH=1.28 - HLDR=X -LC-176').desc, '3/8 AXFPS BULL - ROUGHER'));
+const o1268L = o1268.L;
+function toolRows(L, R) { return TL.compare(diff(L, R)); }
+test('O1268 tool table: 6 tools, no changes against itself', () => {
+  const t = toolRows(o1268L, o1268L);
+  eq(t.rows.length + ' ' + t.rows.filter(r => r.changed).length + ' ' + t.fixture.left, '6 0 F57 100MM RISER - 45487');
+});
+test('O1268 gauge and usage read', () => {
+  const r = toolRows(o1268L, o1268L).rows.find(x => x.tool === 62);
+  eq(r.cells.gauge.left + ' ' + (+r.cells.used.left > 0), '5.8865 true');
+});
+test('OOH change shows in tool table', () => {
+  const R = o1268L.slice(); R[10] = R[10].replace('OOH=0.75', 'OOH=0.80');
+  const r = toolRows(o1268L, R).rows.find(x => x.tool === 33);
+  eq(r.cells.ooh.changed + ' ' + r.cells.id.changed, 'true false');
+});
+test('OOH 2 = 2.0 not flagged', () => {
+  const R = o1268L.slice(); R[9] = R[9].replace('OOH=2 ', 'OOH=2.0 ');
+  eq(toolRows(o1268L, R).rows.find(x => x.tool === 32).cells.ooh.changed, false);
+});
+test('fixture change in tool table', () => {
+  const R = o1268L.map(l => l.replace('F57 100MM', 'F58 100MM'));
+  eq(toolRows(o1268L, R).fixture.changed, true);
+});
+const mini = h => ['%', 'O1000'].concat(h, ['G90', '', '(----------)', '(J)', '(OP1)', '(POCKET)',
+  'G100 T1 X0. Y0. Z1. G43 H1 D2 S1000 M3', 'G1 Z-.1 F10.', 'G0 Z1.', 'M30']);
+test('H/D mismatch, not-listed, never-used warnings', () => {
+  const t = toolRows(mini(['(T5 - ID=X)']), mini(['(T5 - ID=X)']));
+  const w = t.rows.map(r => 'T' + r.tool + ':' + r.warnings.left.join('/')).join(' ');
+  eq(w, 'T1:D2 ≠ T1/not in header list T5:listed, never used');
+});
+test('value in one file only is not red', () => {
+  const t = toolRows(mini(['(T1 - ID=X - OOH=1)']), mini(['(T1 - ID=X)']));
+  eq(t.rows[0].cells.ooh.changed + ' ' + t.rows[0].cells.ooh.oneSided, 'false true');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

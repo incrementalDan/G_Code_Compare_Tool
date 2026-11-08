@@ -131,6 +131,7 @@ const Info = (() => {
     <tr><td>Commented-out code, e.g. <code>(G0 Z1.)</code>. Paired with the live line it came from and marked; code changes inside are listed too</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Tool lines <code>(T33 - ID=… OOH=… HLDR=…)</code> in the header list and tool-setting block</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Notes: any other comment in the code, incl. comments at the end of a code line</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Fixture line <code>(FIXTURE = …)</code> — only when both files have one (older files don't)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Not compared: the comment block at the top of the file (name, date, machine), dividers <code>(-----)</code>, and toolpath label comments (job/tool, operation, strategy, length-check title)</td><td>—</td><td></td></tr>
   </table>
   <p class="info-note">"Ignore comments ( )" / "Ignore comments ;" in Settings still turn off all comment checks of that type.</p>
@@ -201,6 +202,26 @@ const Info = (() => {
   <p class="info-note">A "cut" here means the feed moves between two rapid (G0) moves.
   Feed types other than RPM are <b>likely</b>, not certain: the NC code does not say which feed is which.
   Use the F list when a value looks wrong.</p>
+</section>
+
+<section id="info-tools" class="info-card">
+  <h3>Tool Table <span class="info-where">Tool Table button</span></h3>
+  <p>One row per tool number, left vs right, plus the fixture line at the top.
+  Click a tool to jump to its tool call.</p>
+  <table class="info-table info-kv">
+    <tr><th>Column</th><th>How it is found</th></tr>
+    <tr><td>ID, Description, OOH, Holder, LC</td><td>The tool comment line <code>(T33 - ID=… = desc - OOH=… - HLDR=… -LC-…)</code>. Header list first, tool-setting block fills gaps. Old posts: <code>PRODID=</code> is the ID.</td></tr>
+    <tr><td>Gauge</td><td><code>(CHECKING LENGTH OF TOOL 62 = GAUGE 5.8865)</code></td></tr>
+    <tr><td>Toolpaths</td><td>How many toolpaths use the tool (G100 calls + same-tool toolpaths). Info only.</td></tr>
+  </table>
+  <h4>Warnings (per file)</h4>
+  <ul class="info-list">
+    <li><b>not in header list</b> — tool is called but has no line in the header tool list.</li>
+    <li><b>listed, never used</b> — in the tool list but never called.</li>
+    <li><b>H33 ≠ T32 / D33 ≠ T32</b> — offset number on the G100 line does not match the tool.</li>
+  </ul>
+  <p class="info-note">A value is ${RED} only when <b>both</b> files have it and it differs (OOH <code>2</code> = <code>2.0</code>).
+  A value in one file only is shown dim and not flagged. Same for the fixture line.</p>
 </section>
 
 <section id="info-colors" class="info-card">

@@ -344,9 +344,15 @@ const DiffEngine = (() => {
   //   note   — any other comment, incl. comments on code lines -> critical
   //   label  — divider and toolpath label comments             -> ignored
   //   header — comment block at the top of the file (name, date, machine) -> ignored
+  //   fixture — (FIXTURE = ...) line: critical only when BOTH files have one and they differ
   // Labels and header are covered elsewhere (toolpath name, T words, tool lines).
 
   const TOOL_COMMENT_RE = /^T\d+\s*-/i;
+  const FIXTURE_COMMENT_RE = /^FIXTURE\s*=/i;
+
+  function isFixtureComment(p) {
+    return p.isCommentOnly && FIXTURE_COMMENT_RE.test((p.comment || '').trim());
+  }
   const STRONG_CODE_TYPES = new Set(['gCode', 'mCode', 'axis', 'rotary', 'tool', 'spindle', 'feed', 'expr']);
 
   /**
@@ -375,6 +381,7 @@ const DiffEngine = (() => {
     if (!p.isCommentOnly) return 'note';
     if (commentedCode(p, rules)) return 'code';
     if (TOOL_COMMENT_RE.test((p.comment || '').trim())) return 'tool';
+    if (isFixtureComment(p)) return 'fixture';
     if (isDivider(p)) return 'label';
     return p.commentRole || 'note';
   }
@@ -1162,9 +1169,13 @@ const DiffEngine = (() => {
     const roles = [];
     if (cA) roles.push(commentRole(parsedA, rules));
     if (cB) roles.push(commentRole(parsedB, rules));
-    const ignorable = roles.length > 0 && roles.every(r => r === 'label' || r === 'header');
+    // A fixture line counts only against another fixture line (older files have none)
+    const fixtureBoth = roles.length === 2 && roles[0] === 'fixture' && roles[1] === 'fixture';
+    const ignorable = roles.length > 0 && !fixtureBoth &&
+      roles.every(r => r === 'label' || r === 'header' || r === 'fixture');
     if (cA !== cB && !ignorable) {
-      const field = roles.includes('code') ? 'commentedCode' : roles.includes('tool') ? 'toolComment' : 'comment';
+      const field = roles.includes('code') ? 'commentedCode' : roles.includes('tool') ? 'toolComment' :
+        fixtureBoth ? 'fixture' : 'comment';
       tokenDiffs.push({ field, severity: 'critical',
         leftVal: parsedA.comment, rightVal: parsedB.comment,
         leftTokens: comparedCommentTokens(parsedA, rules),
@@ -1881,6 +1892,8 @@ const DiffEngine = (() => {
     const ca = commentedCode(pa, rules), cb = commentedCode(pb, rules);
     if (ca && !pb.isCommentOnly) return sameKind(ca, pb, rules);
     if (cb && !pa.isCommentOnly) return sameKind(pa, cb, rules);
+    // A fixture line only pairs with a fixture line
+    if (isFixtureComment(pa) !== isFixtureComment(pb)) return false;
     if (pa.isCommentOnly && pb.isCommentOnly) return true;
     const a = wordLetters(pa), b = wordLetters(pb);
     if (a.size === 0 || b.size === 0) return false;
@@ -2003,6 +2016,7 @@ const DiffEngine = (() => {
     segmentIntoToolpaths,
     trackModalState,
     trackContext,
+    commentRole,
     computeSemanticDiff,
     countStats
   };

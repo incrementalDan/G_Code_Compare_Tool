@@ -26,6 +26,7 @@ gcode-compare/
 │   ├── editor.js       — single-layer line-div editor, rendering, decorations
 │   ├── app.js          — UI wiring, settings, state, diff coordination
 │   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
+│   ├── tools.js        — Tool Table: tool list / gauge / usage / fixture compare + popup
 │   └── info.js         — in-app Info popup: what is / isn't checked
 ├── posts/              — shop Fusion post processors (reference only, not loaded)
 │   ├── Brother Speedio M multi-tasking - APW_v8_9_1.cps
@@ -53,6 +54,7 @@ Sections (keep related items grouped in the right one):
 - Always checked — grouped: Motion and position / Tool and spindle /
   Work offsets / Program flow / Added-removed lines
 - Feeds & Speeds — how each column is found (keep in sync with feeds.js)
+- Tool Table — columns, warnings, red/dim rule (keep in sync with tools.js)
 - Filters you control — Comparison rules table, Tolerance table, Show/hide
 - Colours
 - Not checked / limits — anything a user must NOT rely on
@@ -310,6 +312,18 @@ line-count mismatch warning (>10% difference), cursor position
   would need the post's "Parametric feed" property (off today).
 - App exposes `App.getDiffContext()` (engine result incl. leftParsed/rightParsed).
 
+### Tool Table (`tools.js`)
+
+- Button "Tool Table" opens a popup (reuses fd- table styles). `Tools.compare(ctx)`
+  returns { rows, fixture }; `Tools.analyzeFile(parsed, toolpaths)` per file.
+- Tool lines: comment-only `T<n> - ...`, parsed by `parseToolComment` into id
+  (ID= or PRODID=), desc, ooh, holder (HLDR=), lc (-LC-n). Header list wins.
+- Gauge from `CHECKING LENGTH OF TOOL n = GAUGE x`. Used = G100 calls (g100Line)
+  + same-tool toolpaths.
+- Warnings: not in header list, listed never used, H/D on G100 line != T.
+- Red only when both sides have a value and it differs (numbers compared as numbers).
+  One-sided value = dim. Fixture: same rule.
+
 ## What Is NOT Built Yet
 
 ### 1. Per-Toolpath Tolerance Threshold Override
@@ -380,6 +394,8 @@ This list will grow — add new rules to classifyTokens only.
 - label: dividers, and comment-only lines from a toolpath's anchorLine to its first
   real code line (length-check block skipped) -> not compared
 - header: comment-only lines before the first code line of the file -> not compared
+- fixture: (FIXTURE = ...) -> critical only when both sides are fixture lines and differ;
+  one-sided = ignored. sameKind pairs a fixture line only with a fixture line.
 A comment diff is skipped only when every side that has a compared comment is label/header.
 
 ## Severity Naming Convention
