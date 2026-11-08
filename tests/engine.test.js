@@ -240,5 +240,78 @@ test('feed comparison flags a changed cut feed', () => {
   eq(rows[0].cells.cut.changed + ' ' + rows[0].cells.plunge.changed, 'true false');
 });
 
+
+console.log('\nAudit fixes');
+// Type of the op for a given left line index
+function opAt(left, right, leftIdx, rules) {
+  const op = diff(left, right, rules).ops.find(o => o.leftIdx === leftIdx);
+  return op ? op.type : 'none';
+}
+function fieldsAt(left, right, leftIdx, rules) {
+  const op = diff(left, right, rules).ops.find(o => o.leftIdx === leftIdx);
+  return op && op.tokenDiffs ? op.tokenDiffs.map(d => d.field).join(',') : '';
+}
+test('no decimal: X1 = X1. by default', () => eq(opAt(['G1 X1 Y2.'], ['G1 X1. Y2.'], 0), 'equal'));
+test('no decimal: X1 vs X1. critical when setting on', () =>
+  eq(opAt(['G1 X1 Y2.'], ['G1 X1. Y2.'], 0, { decimalPointMatters: true }), 'critical'));
+test('no decimal: X0 vs X0. never flagged', () =>
+  eq(opAt(['G1 X0 Y2.'], ['G1 X0. Y2.'], 0, { decimalPointMatters: true }), 'equal'));
+test('no decimal: R in canned cycle checked too', () =>
+  eq(fieldsAt(['G81 Z-1. R1 F10.'], ['G81 Z-1. R1. F10.'], 0, { decimalPointMatters: true }), 'decimal-R'));
+test('stray character is critical', () => eq(opAt(['G1 X1. Y2.'], ['G1 X1. Y2. *'], 0), 'critical'));
+test('mistyped number (X1..5) is critical', () => eq(opAt(['G1 X1.5'], ['G1 X1..5'], 0), 'critical'));
+test('same stray % on both sides is equal', () => eq(opAt(['%'], ['%'], 0), 'equal'));
+test('G10 offset value change is work offset, no tolerance', () =>
+  eq(opAt(['G10 L2 P1 X-10.0005'], ['G10 L2 P1 X-10.'], 0), 'workoffset'));
+test('G52 shift change is work offset', () => eq(opAt(['G52 X1.0005'], ['G52 X1.'], 0), 'workoffset'));
+test('G92 with axes is work offset', () => eq(opAt(['G92 X0. Y0.'], ['G92 X0. Y.0002'], 0), 'workoffset'));
+test('G92 S Q (spindle clamp) is not work offset', () => eq(opAt(['G92 S3000 Q100'], ['G92 S3500 Q100'], 0), 'critical'));
+test('added G52 line is marked work offset', () => {
+  const op = diff(['G0 X0.', 'G0 X1.'], ['G0 X0.', 'G52 X1.', 'G0 X1.']).ops.find(o => o.type === 'added');
+  eq(!!op.workOffset, true);
+});
+test('incremental G91 move: tiny change is critical', () =>
+  eq(opAt(['G91 G1 X.0009 F10.', 'G1 X.0009'], ['G91 G1 X.0009 F10.', 'G1 X0.'], 1), 'critical'));
+test('absolute move: tiny change still within tolerance', () =>
+  eq(opAt(['G90 G1 X1.0004 F10.'], ['G90 G1 X1. F10.'], 0), 'tolerance'));
+test('GOTO label change is critical even with N ignored', () => {
+  const L = ['IF[#1 GT 1] GOTO 100', 'G1 X1. F10.', 'N100 M1'];
+  const R = ['IF[#1 GT 1] GOTO 100', 'G1 X1. F10.', 'N101 M1'];
+  eq(opAt(L, R, 2), 'critical');
+});
+test('plain N change still ignored', () => eq(opAt(['N10 G1 X1. F10.'], ['N20 G1 X1. F10.'], 0), 'equal'));
+test('arc R small change graded by tolerance', () =>
+  eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5004'], 1), 'tolerance'));
+test('arc R big change is critical', () =>
+  eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.6'], 1), 'critical'));
+test('canned cycle R change stays critical', () =>
+  eq(opAt(['G81 Z-1. R.1 F10.'], ['G81 Z-1. R.1004 F10.'], 0), 'critical'));
+test('macro number format: #100=5. equals #100=5.0', () => eq(opAt(['#100=5.'], ['#100=5.0'], 0), 'equal'));
+test('macro value change still critical', () => eq(opAt(['#100=5.'], ['#100=6.'], 0), 'critical'));
+test('redundant Z (same as active) is minor', () =>
+  eq(opAt(['G1 Z-.5 F10.', 'G1 X1. Y2.'], ['G1 Z-.5 F10.', 'G1 X1. Y2. Z-.5'], 1), 'minor'));
+test('extra Z with different value stays critical', () =>
+  eq(opAt(['G1 Z-.5 F10.', 'G1 X1. Y2.'], ['G1 Z-.5 F10.', 'G1 X1. Y2. Z-.6'], 1), 'critical'));
+test('redundant F (same as active) is minor', () =>
+  eq(opAt(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G1 X1. F10.'], 1), 'minor'));
+test('extra F with new value stays critical', () =>
+  eq(opAt(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G1 X1. F12.'], 1), 'critical'));
+test('redundant word after G28 is not trusted', () =>
+  eq(opAt(['G0 Z1.', 'G28 G91 Z0.', 'G90 G0 X1.'], ['G0 Z1.', 'G28 G91 Z0.', 'G90 G0 X1. Z1.'], 2), 'critical'));
+test('added rapid always shows', () => {
+  const op = diff(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G0 Z-1.', 'G1 X1.']).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('added plain feed move does not always show', () => {
+  const op = diff(['G1 X0. F10.', 'G1 X2.'], ['G1 X0. F10.', 'G1 X1.', 'G1 X2.']).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, false);
+});
+test('M05 / M09 lines join the next toolpath (old layout)', () => {
+  const lines = ['%', 'O1000', 'G90', '', '(J - T1)', '(OP1)', 'G100 T1 X0. Y0. S1000 M3', 'G1 X1. F10.',
+    'M09', 'M05', '', '(J - T2)', '(OP2)', 'G100 T2 X0. Y0. S1000 M3', 'G1 X2. F10.', 'M30'];
+  const T = DE.segmentIntoToolpaths(lines, lines.map(DE.parseGCodeLine)).filter(t => t.type === 'toolpath');
+  eq(T[1].startLine, 8);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

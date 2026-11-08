@@ -27,6 +27,7 @@ const DiffEngine = (() => {
       macros: [],
       programNumber: null,
       exprs: {},          // letter -> expression text, e.g. X[#101+1] or X#101
+      unparsed: '',       // characters that are not a word, comment or macro (e.g. *, a lone X)
       isMacroStatement: false, // IF/GOTO/WHILE/#1=SIN[..] style line
       lineNumber: null,
       blockDelete: false,
@@ -45,6 +46,18 @@ const DiffEngine = (() => {
     let pos = 0;
     const src = line;
     const len = src.length;
+
+    // Characters the parser cannot read are kept, so a stray or mistyped
+    // character is still compared instead of silently dropped.
+    function addUnparsed(at) {
+      result.unparsed += src[at].toUpperCase();
+      const last = result.tokens[result.tokens.length - 1];
+      if (last && last.type === 'unparsed' && last.end === at) {
+        last.text += src[at]; last.end = at + 1;
+      } else {
+        result.tokens.push({ type: 'unparsed', text: src[at], start: at, end: at + 1 });
+      }
+    }
 
     // Two letters in a row outside comments means a macro statement
     // (IF, GOTO, WHILE, DO, END, SIN, ...). Normal G-code words are always
@@ -139,6 +152,7 @@ const DiffEngine = (() => {
           pos += refMatch[0].length;
           continue;
         }
+        addUnparsed(pos);
         pos++;
         continue;
       }
@@ -162,6 +176,7 @@ const DiffEngine = (() => {
         const text = tokenMatch[0];
         const tStart = pos;
         const tEnd = pos + text.length;
+        const noDecimal = !numStr.includes('.');
 
         switch (letter) {
           case 'N':
@@ -178,15 +193,15 @@ const DiffEngine = (() => {
             break;
           case 'X': case 'Y': case 'Z':
             result.axes[letter] = num;
-            result.tokens.push({ type: 'axis', text, value: num, axis: letter, start: tStart, end: tEnd });
+            result.tokens.push({ type: 'axis', text, value: num, axis: letter, start: tStart, end: tEnd, noDecimal });
             break;
           case 'A': case 'B': case 'C':
             result.rotary[letter] = num;
-            result.tokens.push({ type: 'rotary', text, value: num, axis: letter, start: tStart, end: tEnd });
+            result.tokens.push({ type: 'rotary', text, value: num, axis: letter, start: tStart, end: tEnd, noDecimal });
             break;
           case 'I': case 'J': case 'K':
             result.arcParams[letter] = num;
-            result.tokens.push({ type: 'arcParam', text, value: num, axis: letter, start: tStart, end: tEnd });
+            result.tokens.push({ type: 'arcParam', text, value: num, axis: letter, start: tStart, end: tEnd, noDecimal });
             break;
           case 'F':
             result.feed = num;
@@ -209,7 +224,7 @@ const DiffEngine = (() => {
             result.tokens.push({ type: 'dOffset', text, value: num, start: tStart, end: tEnd });
             break;
           case 'R': case 'P': case 'Q': case 'L':
-            result.tokens.push({ type: 'param', text, value: num, param: letter, start: tStart, end: tEnd });
+            result.tokens.push({ type: 'param', text, value: num, param: letter, start: tStart, end: tEnd, noDecimal });
             break;
           default:
             result.tokens.push({ type: 'other', text, value: num, param: letter, start: tStart, end: tEnd });
@@ -218,6 +233,7 @@ const DiffEngine = (() => {
         continue;
       }
 
+      addUnparsed(pos);
       pos++;
     }
 
@@ -255,6 +271,91 @@ const DiffEngine = (() => {
     }
 
     return modalStates;
+  }
+
+  const POS_LETTERS = ['X', 'Y', 'Z', 'A', 'B', 'C'];
+  // After these codes the written value no longer tells where the machine is
+  // (homing, machine coords, tool change, offset/rotation change, macro calls).
+  const POSITION_RESET_G = new Set([10, 28, 30, 43, 44, 49, 52, 53, 53.1, 65, 66, 68, 68.2, 69, 92, 100]);
+  const CANNED_CODES = new Set([73, 74, 76, 81, 82, 83, 84, 85, 86, 87, 88, 89]);
+
+  /**
+   * Per-line machine context, taken BEFORE each line runs:
+   *   inc[i]  1 when the line moves in incremental mode (G91), else 0
+   *   pos[L]  last absolute value written for X/Y/Z/A/B/C (NaN = unknown)
+   *   feed    active modal F (NaN = unknown)
+   * Used to spot redundant words (same value as already active) and
+   * incremental lines (where small errors add up).
+   */
+  function trackContext(parsedLines, modalStates) {
+    const n = parsedLines.length;
+    const inc = new Uint8Array(n);
+    const pos = {};
+    for (const L of POS_LETTERS) pos[L] = new Float64Array(n);
+    const feed = new Float64Array(n);
+    const cur = {};
+    for (const L of POS_LETTERS) cur[L] = NaN;
+    let curF = NaN, incremental = false, inverseTime = false;
+
+    for (let i = 0; i < n; i++) {
+      const p = parsedLines[i];
+      for (const L of POS_LETTERS) pos[L][i] = cur[L];
+      feed[i] = curF;
+
+      const nums = p.gCodes.map(codeNum);
+      if (nums.includes(91)) incremental = true;
+      if (nums.includes(90)) incremental = false;
+      if (nums.includes(93)) inverseTime = true;
+      if (nums.includes(94) || nums.includes(95)) inverseTime = false;
+      inc[i] = incremental ? 1 : 0;
+
+      const reset = incremental || p.isMacroStatement ||
+        nums.some(g => POSITION_RESET_G.has(g) || CANNED_CODES.has(g) || (g >= 54 && g < 60)) ||
+        CANNED_CODES.has(codeNum(modalStates[i] || '')) ||
+        p.mCodes.some(m => { const v = codeNum(m); return v === 6 || v === 98 || v === 99; });
+      for (const L of POS_LETTERS) {
+        const v = p.axes[L] ?? p.rotary[L];
+        if (reset || p.exprs[L] !== undefined) cur[L] = NaN;
+        else if (v !== undefined) cur[L] = v;
+      }
+
+      // Feed mode change (G93/G94/G95) changes what F means. In G93 every move needs its own F.
+      if (nums.some(g => g === 93 || g === 94 || g === 95)) curF = NaN;
+      if (inverseTime || p.exprs.F !== undefined) curF = NaN;
+      else if (p.feed !== null) curF = p.feed;
+    }
+    return { inc, pos, feed };
+  }
+
+  /** Context object for one line, as classifyTokens expects it. */
+  function lineContext(track, i) {
+    if (!track) return null;
+    const prev = {};
+    for (const L of POS_LETTERS) prev[L] = track.pos[L][i];
+    prev.F = track.feed[i];
+    return { inc: track.inc[i] === 1, prev };
+  }
+
+  /**
+   * Mark N-number labels that a GOTO (or M99 Pn) jumps to. These are not
+   * just sequence numbers, so they are compared even when N-numbers are ignored.
+   */
+  function markJumpTargets(parsedLines) {
+    const targets = new Set();
+    for (const p of parsedLines) {
+      for (const m of p.macros) {
+        for (const g of m.matchAll(/GOTO\s*(\d+)/gi)) targets.add(parseInt(g[1], 10));
+      }
+      if (p.mCodes.some(m => codeNum(m) === 99)) {
+        const pt = p.tokens.find(t => t.type === 'param' && t.param === 'P');
+        if (pt) targets.add(Math.round(pt.value));
+      }
+    }
+    if (targets.size === 0) return;
+    for (const p of parsedLines) {
+      const nt = p.tokens.find(t => t.type === 'lineNumber');
+      if (nt && targets.has(Math.round(nt.value))) p.jumpTarget = true;
+    }
   }
 
   // =====================================================
@@ -433,7 +534,7 @@ const DiffEngine = (() => {
 
     // --- Pass 4: Build toolpath objects ---
     const PREAMBLE_CODES = new Set(['G28', 'G53', 'G90', 'G49', 'G69', 'G54', 'G55', 'G56', 'G57', 'G58', 'G59', 'G53.1', 'G68.2']);
-    const PREAMBLE_MCODES = new Set(['M05', 'M09', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M01', 'M141']);
+    const PREAMBLE_MCODES = new Set(['M5', 'M9', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M1', 'M141']);
     const CUTTING_GCODES = new Set([1, 2, 3]);
 
     const toolpaths = [];
@@ -468,12 +569,10 @@ const DiffEngine = (() => {
 
         // Accept preamble-type lines
         const isPreambleG = p.gCodes.some(g => {
-          const norm = g.replace(/^G0*/i, 'G').toUpperCase();
-          return PREAMBLE_CODES.has(norm);
+          return PREAMBLE_CODES.has(normCode(g));
         });
         const isPreambleM = p.mCodes.some(m => {
-          const norm = m.replace(/^M0*/i, 'M').toUpperCase();
-          return PREAMBLE_MCODES.has(norm);
+          return PREAMBLE_MCODES.has(normCode(m));
         });
         const isRapid = p.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 0);
 
@@ -693,7 +792,7 @@ const DiffEngine = (() => {
    */
   function buildFromG100Only(lines, parsedLines, g100Anchors) {
     const PREAMBLE_CODES = new Set(['G28', 'G53', 'G90', 'G49', 'G69', 'G54', 'G55', 'G56', 'G57', 'G58', 'G59', 'G53.1', 'G68.2']);
-    const PREAMBLE_MCODES = new Set(['M05', 'M09', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M01', 'M141']);
+    const PREAMBLE_MCODES = new Set(['M5', 'M9', 'M298', 'M442', 'M443', 'M444', 'M445', 'M495', 'M1', 'M141']);
     const CUTTING_GCODES = new Set([1, 2, 3]);
     const toolpaths = [];
 
@@ -712,8 +811,8 @@ const DiffEngine = (() => {
         if (p.gCodes.length === 0 && p.mCodes.length === 0 &&
             Object.keys(p.axes).length > 0 && !p.isCommentOnly && !p.isBlank) break;
 
-        const isPreambleG = p.gCodes.some(g => PREAMBLE_CODES.has(g.replace(/^G0*/i, 'G').toUpperCase()));
-        const isPreambleM = p.mCodes.some(m => PREAMBLE_MCODES.has(m.replace(/^M0*/i, 'M').toUpperCase()));
+        const isPreambleG = p.gCodes.some(g => PREAMBLE_CODES.has(normCode(g)));
+        const isPreambleM = p.mCodes.some(m => PREAMBLE_MCODES.has(normCode(m)));
         const isRapid = p.gCodes.some(g => parseFloat(g.replace(/^G/i, '')) === 0);
 
         if (p.isBlank || p.isCommentOnly || isPreambleG || isPreambleM || isRapid ||
@@ -873,9 +972,15 @@ const DiffEngine = (() => {
    *
    * modalA / modalB are the active motion modes (G0/G1/G2/G3/canned) for each line.
    */
-  function classifyTokens(parsedA, parsedB, rules, modalA, modalB) {
+  function classifyTokens(parsedA, parsedB, rules, modalA, modalB, ctxA, ctxB) {
     rules = rules || {};
     const tokenDiffs = [];
+    // Lines that write or shift offsets: values here are offset data, not moves
+    const offsetLine = isOffsetSetLine(parsedA) || isOffsetSetLine(parsedB);
+    // Incremental (G91): small errors add up line after line, so no tolerance
+    const incremental = !!((ctxA && ctxA.inc) || (ctxB && ctxB.inc));
+    // A missing word is only "redundant" on a plain move line in absolute mode
+    const plainMoves = !offsetLine && !incremental && isPlainMoveLine(parsedA, modalA) && isPlainMoveLine(parsedB, modalB);
     const gTokA = parsedA.tokens.filter(t => t.type === 'gCode');
     const gTokB = parsedB.tokens.filter(t => t.type === 'gCode');
 
@@ -901,7 +1006,8 @@ const DiffEngine = (() => {
     const changed = [...setA].filter(g => !setB.has(g)).concat([...setB].filter(g => !setA.has(g)));
     if (changed.length > 0) {
       const changedSet = new Set(changed);
-      const woChanged = changed.some(isWorkOffsetCode);
+      const woChanged = changed.some(isWorkOffsetCode) ||
+        (offsetLine && changed.some(g => OFFSET_SET_CODES.has(codeNum(g))));
       tokenDiffs.push({ field: woChanged ? 'workOffset' : 'gCode',
         severity: woChanged ? 'workoffset' : 'critical',
         leftVal: [...setA].sort().join(','), rightVal: [...setB].sort().join(','),
@@ -923,7 +1029,13 @@ const DiffEngine = (() => {
     compareField(parsedA, parsedB, 'hOffset', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'dOffset', 'critical', tokenDiffs);
     compareField(parsedA, parsedB, 'spindle', 'critical', tokenDiffs);
-    compareField(parsedA, parsedB, 'feed', 'critical', tokenDiffs);
+    if (parsedA.feed === null && parsedB.feed !== null && sameAsActive(ctxA, 'F', parsedB.feed)) {
+      tokenDiffs.push(redundantDiff('F', 'feed', parsedA, parsedB));
+    } else if (parsedB.feed === null && parsedA.feed !== null && sameAsActive(ctxB, 'F', parsedA.feed)) {
+      tokenDiffs.push(redundantDiff('F', 'feed', parsedA, parsedB));
+    } else {
+      compareField(parsedA, parsedB, 'feed', 'critical', tokenDiffs);
+    }
 
     // --- Axes. Value change -> graded by tolerance. Missing on one side -> critical. ---
     for (const axis of ['X', 'Y', 'Z', 'A', 'B', 'C']) {
@@ -932,11 +1044,19 @@ const DiffEngine = (() => {
       if (va === null && vb === null) continue;
       if (va === null || vb === null || Math.abs(va - vb) > FP_EPS) {
         const missing = va === null || vb === null;
-        const sev = missing ? 'critical' : (axis === 'Z' ? 'coordinate-z' : 'coordinate');
         const tType = (axis === 'A' || axis === 'B' || axis === 'C') ? 'rotary' : 'axis';
+        // Word written on one side only, but equal to the value already active on the other
+        if (missing && plainMoves &&
+            ((va === null && sameAsActive(ctxA, axis, vb)) || (vb === null && sameAsActive(ctxB, axis, va)))) {
+          tokenDiffs.push(redundantDiff(axis, tType, parsedA, parsedB));
+          continue;
+        }
+        let sev = missing ? 'critical' : (axis === 'Z' ? 'coordinate-z' : 'coordinate');
+        if (offsetLine) sev = 'workoffset';
+        else if (incremental) sev = 'critical';
         const delta = missing ? null : Math.abs(va - vb);
         tokenDiffs.push({ field: 'axis-' + axis, severity: sev,
-          leftVal: va, rightVal: vb, delta,
+          leftVal: va, rightVal: vb, delta, incremental: incremental && !offsetLine && !missing,
           leftTokens: parsedA.tokens.filter(t => (t.type === tType) && t.axis === axis),
           rightTokens: parsedB.tokens.filter(t => (t.type === tType) && t.axis === axis) });
       }
@@ -968,8 +1088,9 @@ const DiffEngine = (() => {
     }
 
     // --- Macros ---
-    const macroA = normText(parsedA.macros.join('|'), { ...rules, ignoreCase: true });
-    const macroB = normText(parsedB.macros.join('|'), { ...rules, ignoreCase: true });
+    // Numbers inside macros are compared as numbers: #100=5. equals #100=5.0
+    const macroA = normText(normMacroNumbers(parsedA.macros.join('|')), { ...rules, ignoreCase: true });
+    const macroB = normText(normMacroNumbers(parsedB.macros.join('|')), { ...rules, ignoreCase: true });
     if (macroA !== macroB) {
       tokenDiffs.push({ field: 'macro', severity: 'critical',
         leftVal: parsedA.macros.join('|'), rightVal: parsedB.macros.join('|'),
@@ -977,8 +1098,12 @@ const DiffEngine = (() => {
         rightTokens: parsedB.tokens.filter(t => t.type === 'macro') });
     }
 
-    // G54.1 Pn: the P word picks the work offset
+    // G54.1 Pn: the P word picks the work offset. On G10/G52/G92 lines, P/L/R are offset data.
     const extWO = parsedA.gCodes.some(g => codeNum(g) === 54.1) || parsedB.gCodes.some(g => codeNum(g) === 54.1);
+    // R on an arc (G2/G3 both sides) is geometry, graded by tolerance like I/J/K.
+    // R in a canned cycle is the retract plane and stays critical.
+    const ARC = new Set(['G2', 'G3']);
+    const arcBoth = ARC.has(normCode(motionA || '')) && ARC.has(normCode(motionB || ''));
 
     // --- Params (R, P, Q, L) and unrecognized words (U, V, W, E ...) ---
     for (const ttype of ['param', 'other']) {
@@ -991,9 +1116,11 @@ const DiffEngine = (() => {
       for (const k of keys) {
         const va = mapA[k], vb = mapB[k];
         if (va === undefined || vb === undefined || Math.abs(va - vb) > FP_EPS) {
-          const wo = extWO && k === 'P';
-          tokenDiffs.push({ field: wo ? 'workOffset' : ttype + '-' + k, severity: wo ? 'workoffset' : 'critical',
-            leftVal: va, rightVal: vb,
+          const wo = (extWO && k === 'P') || (offsetLine && ttype === 'param');
+          const arcR = !wo && arcBoth && ttype === 'param' && k === 'R' && va !== undefined && vb !== undefined;
+          tokenDiffs.push({ field: wo ? 'workOffset' : ttype + '-' + k,
+            severity: wo ? 'workoffset' : (arcR ? 'coordinate' : 'critical'),
+            leftVal: va, rightVal: vb, delta: arcR ? Math.abs(va - vb) : undefined,
             leftTokens: tA.filter(t => t.param === k),
             rightTokens: tB.filter(t => t.param === k) });
         }
@@ -1012,6 +1139,26 @@ const DiffEngine = (() => {
       }
     }
 
+    // --- Characters the parser could not read (stray or mistyped) ---
+    if (parsedA.unparsed !== parsedB.unparsed) {
+      tokenDiffs.push({ field: 'unparsed', severity: 'critical',
+        leftVal: parsedA.unparsed, rightVal: parsedB.unparsed,
+        leftTokens: parsedA.tokens.filter(t => t.type === 'unparsed'),
+        rightTokens: parsedB.tokens.filter(t => t.type === 'unparsed') });
+    }
+
+    // --- No decimal point (setting): on many controls X1 = 0.0001", X1. = 1" ---
+    if (rules.decimalPointMatters) {
+      for (const L of DECIMAL_LETTERS) {
+        const ta = parsedA.tokens.find(t => t.noDecimal !== undefined && (t.axis === L || t.param === L));
+        const tb = parsedB.tokens.find(t => t.noDecimal !== undefined && (t.axis === L || t.param === L));
+        if (!ta || !tb || ta.noDecimal === tb.noDecimal) continue;
+        if (ta.value === 0 && tb.value === 0) continue; // X0 = X0. on every control
+        tokenDiffs.push({ field: 'decimal-' + L, severity: 'critical',
+          leftVal: ta.text, rightVal: tb.text, leftTokens: [ta], rightTokens: [tb] });
+      }
+    }
+
     // --- Block delete: a "/" switches the whole line on/off at the control ---
     if (!rules.ignoreBlockDelete && parsedA.blockDelete !== parsedB.blockDelete) {
       tokenDiffs.push({ field: 'blockDelete', severity: 'critical',
@@ -1020,8 +1167,17 @@ const DiffEngine = (() => {
         rightTokens: parsedB.tokens.filter(t => t.type === 'blockDelete') });
     }
 
+    // --- GOTO / M99 P jump labels: always compared, a wrong label breaks the jump ---
+    const jump = parsedA.jumpTarget || parsedB.jumpTarget;
+    const nVal = p => { const t = p.tokens.find(x => x.type === 'lineNumber'); return t ? Math.round(t.value) : null; };
+    if (jump && nVal(parsedA) !== nVal(parsedB)) {
+      tokenDiffs.push({ field: 'jumpLabel', severity: 'critical',
+        leftVal: parsedA.lineNumber, rightVal: parsedB.lineNumber,
+        leftTokens: parsedA.tokens.filter(t => t.type === 'lineNumber'),
+        rightTokens: parsedB.tokens.filter(t => t.type === 'lineNumber') });
+    }
     // --- N-numbers (format only) ---
-    if (!rules.ignoreLineNumbers && (parsedA.lineNumber || '').toUpperCase() !== (parsedB.lineNumber || '').toUpperCase()) {
+    else if (!rules.ignoreLineNumbers && (parsedA.lineNumber || '').toUpperCase() !== (parsedB.lineNumber || '').toUpperCase()) {
       tokenDiffs.push({ field: 'lineNumber', severity: 'minor',
         leftVal: parsedA.lineNumber, rightVal: parsedB.lineNumber,
         leftTokens: parsedA.tokens.filter(t => t.type === 'lineNumber'),
@@ -1085,7 +1241,46 @@ const DiffEngine = (() => {
   }
 
   function hasWorkOffset(parsed) {
-    return parsed.gCodes.some(isWorkOffsetCode);
+    return parsed.gCodes.some(isWorkOffsetCode) || isOffsetSetLine(parsed);
+  }
+
+  // Letters where a missing decimal point can change the value (setting decimalPointMatters)
+  const DECIMAL_LETTERS = ['X', 'Y', 'Z', 'A', 'B', 'C', 'I', 'J', 'K', 'R', 'Q'];
+  // G10 (write offset), G52 (local shift), G92 (preset; only with axis words —
+  // on Brother turning G92 S.. Q.. is a spindle clamp)
+  const OFFSET_SET_CODES = new Set([10, 52, 92]);
+
+  function isOffsetSetLine(p) {
+    return p.gCodes.some(g => {
+      const n = codeNum(g);
+      if (n === 10 || n === 52) return true;
+      return n === 92 && Object.keys(p.axes).length + Object.keys(p.rotary).length > 0;
+    });
+  }
+
+  /** A line where an axis/F word means "go here": no homing, cycles, offsets or macros. */
+  function isPlainMoveLine(p, modal) {
+    if (p.isMacroStatement) return false;
+    if (CANNED_CODES.has(codeNum(modal || ''))) return false;
+    return !p.gCodes.some(g => { const n = codeNum(g); return POSITION_RESET_G.has(n) || CANNED_CODES.has(n); });
+  }
+
+  /** True when value v equals the value already active before this line. */
+  function sameAsActive(ctx, letter, v) {
+    if (!ctx || !ctx.prev) return false;
+    const a = ctx.prev[letter];
+    return !Number.isNaN(a) && a !== undefined && Math.abs(a - v) <= FP_EPS;
+  }
+
+  function redundantDiff(letter, tType, parsedA, parsedB) {
+    const pick = p => p.tokens.filter(t => t.type === tType && (tType === 'feed' || t.axis === letter));
+    return { field: 'redundant-' + letter, severity: 'minor',
+      leftVal: null, rightVal: null, leftTokens: pick(parsedA), rightTokens: pick(parsedB) };
+  }
+
+  /** 5. / 5.0 / 05 -> 5 inside macro text, so number format does not count as a change. */
+  function normMacroNumbers(text) {
+    return text.replace(/\d+\.\d*|\.\d+|\d+/g, m => String(parseFloat(m)));
   }
 
   function compareField(parsedA, parsedB, field, severity, tokenDiffs) {
@@ -1512,6 +1707,11 @@ const DiffEngine = (() => {
     // Track modal G-code state per file
     const leftModal = trackModalState(leftParsed);
     const rightModal = trackModalState(rightParsed);
+    // G90/G91, last position and modal F per line; GOTO jump labels
+    const leftTrack = trackContext(leftParsed, leftModal);
+    const rightTrack = trackContext(rightParsed, rightModal);
+    markJumpTargets(leftParsed);
+    markJumpTargets(rightParsed);
 
     // Segment into toolpaths
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
@@ -1546,7 +1746,8 @@ const DiffEngine = (() => {
 
         // classifyOps — index maps already point to real line indices
         const segOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed,
-                                    segLeftIdxMap, segRightIdxMap, rules, leftModal, rightModal);
+                                    segLeftIdxMap, segRightIdxMap, rules, leftModal, rightModal,
+                                    leftTrack, rightTrack);
         allOps.push(...segOps);
 
       } else if (match.left) {
@@ -1596,16 +1797,25 @@ const DiffEngine = (() => {
     return shared / Math.max(a.size, b.size) >= 0.5;
   }
 
-  function oneSidedOp(type, idx, lines, parsed, rules) {
+  /**
+   * modal is passed only for lines inside a matched toolpath: there an added
+   * or removed rapid (G0) move always shows, even when the toolpath is hidden.
+   */
+  function oneSidedOp(type, idx, lines, parsed, rules, modal) {
     const op = type === 'added'
       ? { type, rightIdx: idx, rightLine: lines[idx] }
       : { type, leftIdx: idx, leftLine: lines[idx] };
     if (hasCriticalContent(parsed[idx], rules)) op.alwaysShow = true;
+    if (modal && modal[idx] === 'G0' &&
+        Object.keys(parsed[idx].axes).length + Object.keys(parsed[idx].rotary).length > 0) {
+      op.alwaysShow = true;
+      op.rapid = true;
+    }
     if (hasWorkOffset(parsed[idx])) op.workOffset = true;
     return op;
   }
 
-  function classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap, rules, leftModal, rightModal) {
+  function classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed, leftIdxMap, rightIdxMap, rules, leftModal, rightModal, leftTrack, rightTrack) {
     const result = [];
     let i = 0;
 
@@ -1613,7 +1823,8 @@ const DiffEngine = (() => {
       if (rawOps[i].type === 'equal') {
         const li = leftIdxMap[rawOps[i].leftIdx];
         const ri = rightIdxMap[rawOps[i].rightIdx];
-        const classification = classifyTokens(leftParsed[li], rightParsed[ri], rules, leftModal[li], rightModal[ri]);
+        const classification = classifyTokens(leftParsed[li], rightParsed[ri], rules, leftModal[li], rightModal[ri],
+          lineContext(leftTrack, li), lineContext(rightTrack, ri));
         if (classification.severity === 'equal') {
           result.push({ type: 'equal', leftIdx: li, rightIdx: ri,
                         leftLine: leftLines[li], rightLine: rightLines[ri] });
@@ -1642,8 +1853,8 @@ const DiffEngine = (() => {
       // of line (share most word letters). Unrelated lines stay as plain
       // removed / added instead of being compared against each other.
       let ai = 0, ri = 0;
-      const emitRemoved = upTo => { for (; ri < upTo; ri++) { const li = leftIdxMap[removes[ri].leftIdx]; result.push(oneSidedOp('removed', li, leftLines, leftParsed, rules)); } };
-      const emitAdded = upTo => { for (; ai < upTo; ai++) { const rj = rightIdxMap[adds[ai].rightIdx]; result.push(oneSidedOp('added', rj, rightLines, rightParsed, rules)); } };
+      const emitRemoved = upTo => { for (; ri < upTo; ri++) { const li = leftIdxMap[removes[ri].leftIdx]; result.push(oneSidedOp('removed', li, leftLines, leftParsed, rules, leftModal)); } };
+      const emitAdded = upTo => { for (; ai < upTo; ai++) { const rj = rightIdxMap[adds[ai].rightIdx]; result.push(oneSidedOp('added', rj, rightLines, rightParsed, rules, rightModal)); } };
       let searchFrom = 0;
       for (let r = 0; r < removes.length; r++) {
         const li = leftIdxMap[removes[r].leftIdx];
@@ -1655,7 +1866,8 @@ const DiffEngine = (() => {
         emitRemoved(r);
         emitAdded(match);
         const rj = rightIdxMap[adds[match].rightIdx];
-        const classification = classifyTokens(leftParsed[li], rightParsed[rj], rules, leftModal[li], rightModal[rj]);
+        const classification = classifyTokens(leftParsed[li], rightParsed[rj], rules, leftModal[li], rightModal[rj],
+          lineContext(leftTrack, li), lineContext(rightTrack, rj));
         result.push({
           type: classification.severity,
           leftIdx: li, rightIdx: rj,
@@ -1698,6 +1910,7 @@ const DiffEngine = (() => {
     segmentIntoSections,
     segmentIntoToolpaths,
     trackModalState,
+    trackContext,
     computeSemanticDiff,
     countStats
   };

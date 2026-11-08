@@ -83,12 +83,23 @@ Plain Node, no npm. Add a test for every new rule.
 - Comment tokens carry kind: 'paren' or 'semi' (parenComments / semiComments arrays)
 - Paren comments end at the matching ')' (nested brackets allowed)
 - Tracks isBlank, isCommentOnly, blockDelete (leading whitespace allowed), raw text
+- Characters that are not a word/comment/macro go to `unparsed` (string) and
+  'unparsed' tokens — compared, never silently dropped
+- Axis/rotary/arcParam/param tokens carry noDecimal (X1 vs X1.)
 
 **Modal G-code state tracking** (`trackModalState`):
 - Tracks current motion mode across a file: G0/G1/G2/G3 and canned cycles
   (G73/G74/G76/G80-G89)
 - Used in fingerprints for bare coordinate lines (no explicit G-code)
 - Used in classifyTokens: a bare move under G0 vs under G1 is a critical diff
+
+**Line context** (`trackContext` / `lineContext`), value BEFORE each line:
+- inc: G91 incremental active. pos X/Y/Z/A/B/C: last absolute value written.
+  feed: active modal F. NaN = unknown.
+- Position resets (unknown) after G10/G28/G30/G43/G44/G49/G52/G53/G53.1/G65/G66/
+  G68/G68.2/G69/G92/G100, G54-G59, canned cycles, M6/M98/M99, G91, macros.
+  F resets on G93/G94/G95 and in G93.
+- `markJumpTargets`: N labels that a GOTO or M99 Pn targets get jumpTarget = true.
 
 **Toolpath segmentation** (`segmentIntoToolpaths`) — Brother Speedio / Fusion 360.
 Two post layouts. The new one is tried first (`segmentByDividers`):
@@ -148,6 +159,9 @@ Two post layouts. The new one is tried first (`segmentByDividers`):
 alwaysShow when it carries critical content (M, T/H/D, S, F, comment, macro,
 non-motion G, work offset, block delete, params). Plain moves do not.
 Lines with G54-G59 get workOffset = true.
+
+**One-sided rapids**: an added/removed G0 move inside a matched toolpath gets
+alwaysShow (oneSidedOp with modal). Whole added/removed toolpaths do not.
 
 **Tolerance classification** (`applyToleranceClassification`):
 - Grades lines whose type is coordinate / coordinate-z by max delta:
@@ -232,7 +246,7 @@ Not used by the UI — app.js counts only what is actually displayed.
 **Settings** (localStorage, versioned at SETTINGS_VERSION = 6):
 - ignoreParenComments (default: OFF), ignoreSemiComments (ON),
   ignoreWhitespace (ON), ignoreCase (ON), normalizeGMCodes (ON),
-  ignoreLineNumbers (ON), ignoreBlockDelete (OFF)
+  ignoreLineNumbers (ON), ignoreBlockDelete (OFF), decimalPointMatters (OFF)
 - minorThreshold (default: 0.001), majorThreshold (default: 0.01)
 - syncScroll (ON)
 - Settings version bump clears stale saved settings
@@ -333,6 +347,7 @@ This list will grow — add new rules to classifyTokens only.
 |---|---|---|
 | Work offset | workoffset (purple) | G54-G59 change in non-motion G-code set |
 | Work offset | workoffset (purple) | P (or P expression) change on a G54.1 line |
+| Offset data | workoffset (purple) | Any axis/param change on G10, G52, or G92-with-axes lines (no tolerance). G92 S Q = spindle clamp, not offset |
 | Motion mode | critical | Active G0/G1/G2/G3/canned mode differs (uses modal state) |
 | Non-motion G-codes | critical | Any other G-code set difference |
 | M-codes | critical | Any M-code set difference |
@@ -340,10 +355,16 @@ This list will grow — add new rules to classifyTokens only.
 | Spindle speed | critical | S value difference |
 | Feed rate | critical | F value difference |
 | Missing axis | critical | Axis or I/J/K present on one side only |
+| Redundant word | minor | Axis or F on one side only, equal to the active value (plain move line, G90, position known) |
+| Incremental move | critical | Any axis value change while G91 is active (errors add up) |
+| Unparsed text | critical | Unreadable characters differ (stray *, X1..5) |
+| No decimal | critical | Only with setting decimalPointMatters: X1 vs X1. on X/Y/Z/A/B/C/I/J/K/R/Q (zero exempt) |
+| Jump label | critical | N label targeted by GOTO / M99 P differs (even with Ignore N-numbers) |
 | Comment content | critical | Comment text difference (after ignore rules) |
-| Macros | critical | Any # token or macro statement (IF/GOTO/...) difference |
+| Macros | critical | Any # token or macro statement (IF/GOTO/...) difference; numbers compared as numbers (5. = 5.0) |
 | Expression words | critical | X[#101+1] / X#101 text difference |
 | Params / other words | critical | R/P/Q/L or unrecognized letter difference |
+| Arc R | coordinate (tolerance) | R value change when both lines are G2/G3 (canned cycle R stays critical) |
 | Block delete | critical | / on one side only (unless Ignore block delete) |
 | Coordinate > major | critical | Max delta beyond majorThreshold |
 | N-number | minor | Only when Ignore N-numbers is off |
@@ -373,6 +394,8 @@ Tuned for Fusion 360 posts on Brother Speedio. Key behaviors to preserve:
 
 - G100 with T AND (X/Y or S or M03/M04) is the tool-change anchor for Brother.
   A bare G100 without these qualifiers is not a tool call.
+- PREAMBLE_CODES / PREAMBLE_MCODES hold normalized codes (M5 not M05) and are
+  checked with normCode.
 - Preamble expansion absorbs inter-toolpath housekeeping lines (G28, G53, M05,
   M09, M298, rapids, blanks) into the preceding segment so they don't appear
   as orphaned lines between toolpaths.

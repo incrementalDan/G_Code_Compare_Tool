@@ -13,6 +13,7 @@ const App = (() => {
     normalizeGMCodes: true,
     ignoreLineNumbers: true,
     ignoreBlockDelete: false,
+    decimalPointMatters: false, // ON: X1 (no decimal) is not the same as X1.
     minorThreshold: 0.001,
     majorThreshold: 0.01,
     syncScroll: true
@@ -164,6 +165,7 @@ N120 M30`;
     document.getElementById('opt-normalize-gm').checked = settings.normalizeGMCodes;
     document.getElementById('opt-ignore-line-numbers').checked = settings.ignoreLineNumbers;
     document.getElementById('opt-ignore-block-delete').checked = settings.ignoreBlockDelete;
+    document.getElementById('opt-decimal-point-matters').checked = settings.decimalPointMatters;
     document.getElementById('minor-threshold-value').textContent = settings.minorThreshold;
     document.getElementById('major-threshold-value').textContent = settings.majorThreshold;
     document.getElementById('opt-sync-scroll').checked = settings.syncScroll;
@@ -226,6 +228,7 @@ N120 M30`;
       'opt-normalize-gm': 'normalizeGMCodes',
       'opt-ignore-line-numbers': 'ignoreLineNumbers',
       'opt-ignore-block-delete': 'ignoreBlockDelete',
+      'opt-decimal-point-matters': 'decimalPointMatters',
       'opt-sync-scroll': 'syncScroll'
     };
 
