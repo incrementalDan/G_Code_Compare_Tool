@@ -126,6 +126,15 @@ const Info = (() => {
     <tr><td>Program number O</td><td>${AMBER}</td><td></td></tr>
   </table>
 
+  <h4>Comments</h4>
+  <table class="info-table info-rules">
+    <tr><td>Commented-out code, e.g. <code>(G0 Z1.)</code>. Paired with the live line it came from and marked; code changes inside are listed too</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Tool lines <code>(T33 - ID=… OOH=… HLDR=…)</code> in the header list and tool-setting block</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Notes: any other comment in the code, incl. comments at the end of a code line</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Not compared: the comment block at the top of the file (name, date, machine), dividers <code>(-----)</code>, and toolpath label comments (job/tool, operation, strategy, length-check title)</td><td>—</td><td></td></tr>
+  </table>
+  <p class="info-note">"Ignore comments ( )" / "Ignore comments ;" in Settings still turn off all comment checks of that type.</p>
+
   <h4>Added / removed lines</h4>
   <p>A line on one side only shows as ${GREEN} or ${BURG}. It still shows inside a hidden
   toolpath if it has an M, T, H, D, S, F, macro, comment, non-motion G, work offset, or <code>/</code>.
@@ -139,8 +148,8 @@ const Info = (() => {
   <h4>Comparison rules <span class="info-where">⚙ Settings</span></h4>
   <table class="info-table">
     <tr><th>Setting</th><th>Default</th><th>When ON</th><th>When OFF</th></tr>
-    <tr><td>Ignore comments ( )</td><td>${OFF}</td><td>( ) comments not compared</td><td>Comment change = ${RED}</td></tr>
-    <tr><td>Ignore comments ;</td><td>${ON}</td><td>; comments not compared</td><td>Comment change = ${RED}</td></tr>
+    <tr><td>Ignore comments ( )</td><td>${OFF}</td><td>( ) comments not compared</td><td>See <a href="#info-always">Comments</a></td></tr>
+    <tr><td>Ignore comments ;</td><td>${ON}</td><td>; comments not compared</td><td>See <a href="#info-always">Comments</a></td></tr>
     <tr><td>Ignore whitespace</td><td>${ON}</td><td>Spaces don't matter</td><td>Spacing-only change = ${AMBER}</td></tr>
     <tr><td>Ignore case</td><td>${ON}</td><td>Upper/lower case don't matter</td><td>Case-only change = ${AMBER}</td></tr>
     <tr><td>Normalize G/M codes</td><td>${ON}</td><td>G01 = G1, M03 = M3</td><td>G01 vs G1 = ${AMBER}</td></tr>
@@ -220,6 +229,9 @@ const Info = (() => {
       rotation change, a canned cycle, G91 or a macro, a word on one side only is critical again.</li>
     <li><b>One tolerance for all axes.</b> Rotary A/B/C (degrees) and I/J/K use the same thresholds as X/Y/Z.</li>
     <li><b>Blank lines</b> are not compared.</li>
+    <li><b>Top-of-file comments are not compared</b>, incl. a fixture line like <code>(FIXTURE = …)</code>. Tool lines there are.</li>
+    <li><b>Commented-out code</b> is spotted when the comment reads as G-code (a G/M/T/S/F or axis word, nothing unreadable).
+      A comment of plain words is a note.</li>
     <li><b>G92</b> counts as an offset only with axis words. <code>G92 S.. Q..</code> (spindle clamp in turning) is a normal G-code.</li>
     <li><b>Toolpath detection</b> is tuned for Fusion 360 posts on Brother (G100 tool calls).
       Other posts fall back to G100-only or comment-based sections. Check toolpath labels look right.</li>

@@ -131,7 +131,7 @@ test('GOTO is not read as a program number', () =>
   eq(DE.parseGCodeLine('IF [#1 GT 2] GOTO10').programNumber, null));
 test('X[#101+1] vs X[#101+2] is critical', () => eq(types(['G1 X[#101+1]'], ['G1 X[#101+2]']), 'critical'));
 test('#101=SIN[30] vs SIN[45] is critical', () => eq(types(['#101=SIN[30]'], ['#101=SIN[45]']), 'critical'));
-test('nested bracket comment compared in full', () => eq(types(['(A(B)C)'], ['(A(B)D)']), 'critical'));
+test('nested bracket comment compared in full', () => eq(types(['G0 X0.', '(A(B)C)'], ['G0 X0.', '(A(B)D)']), 'equal,critical'));
 
 console.log('Line pairing');
 test('inserted move lines up exactly', () =>
@@ -311,6 +311,50 @@ test('M05 / M09 lines join the next toolpath (old layout)', () => {
     'M09', 'M05', '', '(J - T2)', '(OP2)', 'G100 T2 X0. Y0. S1000 M3', 'G1 X2. F10.', 'M30'];
   const T = DE.segmentIntoToolpaths(lines, lines.map(DE.parseGCodeLine)).filter(t => t.type === 'toolpath');
   eq(T[1].startLine, 8);
+});
+
+console.log('\nComments');
+const BODY = ['G0 X0. Y0.', 'G1 Z-.1 F10.'];
+test('note in code changed = critical', () => eq(opAt(BODY.concat(['(CHK A)']), BODY.concat(['(CHK B)']), 2), 'critical'));
+test('added note always shows', () => {
+  const op = diff(BODY.concat(['G1 X1.']), BODY.concat(['(CHANGE FEED HERE)', 'G1 X1.'])).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('inline comment on code line = critical', () => eq(opAt(['G0 X0. (A)'], ['G0 X0. (B)'], 0), 'critical'));
+test('top-of-file header comment ignored', () =>
+  eq(opAt(['(POSTED 1.1.2026)', 'G0 X0.'], ['(POSTED 2.2.2026)', 'G0 X0.'], 0), 'equal'));
+test('header tool line change = critical', () =>
+  eq(fieldsAt(['(T1 - ID=A-1 - OOH=0.75)', 'G0 X0.'], ['(T1 - ID=A-1 - OOH=1.0)', 'G0 X0.'], 0), 'toolComment'));
+test('tool ID change = critical', () =>
+  eq(opAt(['(T1 - ID=A-1 - OOH=0.75)', 'G0 X0.'], ['(T1 - ID=A-2 - OOH=0.75)', 'G0 X0.'], 0), 'critical'));
+test('commented-out code paired with live line', () =>
+  eq(types(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z1.)'])), 'equal,equal,critical'));
+test('commented-out code shows field commentedOut', () =>
+  eq(fieldsAt(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z1.)']), 2), 'commentedOut'));
+test('commented-out code with changed value lists the change', () =>
+  eq(fieldsAt(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z2.)']), 2), 'commentedOut,axis-Z'));
+test('added commented-out code always shows', () => {
+  const op = diff(BODY.concat(['G1 X1.']), BODY.concat(['(M00)', 'G1 X1.'])).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('plain words are not code: (ADAPTIVE) (CLEAR TLO)', () => {
+  const p = DE.parseGCodeLine('(CLEAR TLO)');
+  eq(types(BODY.concat(['(ADAPTIVE)']), BODY.concat(['(CLEAR TLO)'])), 'equal,equal,critical');
+});
+// Divider layout: label comments under the divider are not compared
+const tpL = ['%', 'O1000', '(T1 - ID=A-1)', 'G90', '', '(----------)', '(JOB - 1/4 EM)', '(POCKET1)', '(POCKET)',
+  'G100 T1 X0. Y0. Z1. S1000 M3', 'G1 Z-.1 F10.', 'G0 Z1.', 'M30'];
+test('toolpath label comment change ignored', () => {
+  const R = tpL.map(l => l === '(JOB - 1/4 EM)' ? '(JOB - 1/4 EM NEW DESC)' : l);
+  eq(opAt(tpL, R, 6), 'equal');
+});
+test('ignore ( ) setting still turns all off', () =>
+  eq(opAt(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z1.)']), 2, { ignoreParenComments: true }), 'removed'));
+test('real file: O1268 header tool OOH change caught', () => {
+  const L = fs.readFileSync(path.join(__dirname, '..', 'Examples', 'O1268.NC'), 'utf8').split(/\r?\n/);
+  const R = L.slice(); R[10] = R[10].replace('OOH=0.75', 'OOH=0.80');
+  const ops = diff(L, R).ops.filter(o => o.type !== 'equal');
+  eq(ops.map(o => o.type + ':' + o.leftIdx).join(','), 'critical:10');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

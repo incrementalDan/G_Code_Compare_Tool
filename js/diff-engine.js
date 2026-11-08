@@ -336,6 +336,68 @@ const DiffEngine = (() => {
     return { inc: track.inc[i] === 1, prev };
   }
 
+  // =====================================================
+  // Comment roles
+  // =====================================================
+  //   code   — a commented-out code line, e.g. (G0 Z1.)        -> critical
+  //   tool   — tool description line (T33 - ID=... HLDR...)     -> critical
+  //   note   — any other comment, incl. comments on code lines -> critical
+  //   label  — divider and toolpath label comments             -> ignored
+  //   header — comment block at the top of the file (name, date, machine) -> ignored
+  // Labels and header are covered elsewhere (toolpath name, T words, tool lines).
+
+  const TOOL_COMMENT_RE = /^T\d+\s*-/i;
+  const STRONG_CODE_TYPES = new Set(['gCode', 'mCode', 'axis', 'rotary', 'tool', 'spindle', 'feed', 'expr']);
+
+  /**
+   * If a comment-only line holds G-code, return that code parsed (cached).
+   * Respects the ignore-comment rules: an ignored comment is never code.
+   */
+  function commentedCode(p, rules) {
+    if (!p.isCommentOnly) return null;
+    const ct = p.tokens.filter(t => t.type === 'comment');
+    if (ct.length !== 1) return null;
+    if ((ct[0].kind === 'paren' && rules && rules.ignoreParenComments) ||
+        (ct[0].kind === 'semi' && rules && rules.ignoreSemiComments)) return null;
+    if (p._cc === undefined) {
+      const inner = ct[0].kind === 'paren' ? (p.parenComments[0] || '') : (p.semiComments[0] || '');
+      const q = parseGCodeLine(inner);
+      const words = q.tokens.filter(t => t.type !== 'comment' && t.type !== 'lineNumber' && t.type !== 'blockDelete');
+      const macroCode = q.isMacroStatement && /[#\[]/.test(inner);
+      const ok = words.length > 0 && !q.unparsed && (q.isMacroStatement ? macroCode :
+        words.some(t => STRONG_CODE_TYPES.has(t.type) || (t.type === 'macro' && t.text.startsWith('#'))));
+      p._cc = ok ? q : null;
+    }
+    return p._cc;
+  }
+
+  function commentRole(p, rules) {
+    if (!p.isCommentOnly) return 'note';
+    if (commentedCode(p, rules)) return 'code';
+    if (TOOL_COMMENT_RE.test((p.comment || '').trim())) return 'tool';
+    if (isDivider(p)) return 'label';
+    return p.commentRole || 'note';
+  }
+
+  /** Set commentRole 'header' / 'label' on comment-only lines. */
+  function markCommentRoles(parsedLines, toolpaths) {
+    for (let i = 0; i < parsedLines.length; i++) {
+      const p = parsedLines[i];
+      if (p.isBlank || p.isCommentOnly) { if (p.isCommentOnly) p.commentRole = 'header'; continue; }
+      break;
+    }
+    for (const tp of toolpaths) {
+      if (tp.type !== 'toolpath' || tp.anchorLine < 0) continue;
+      for (let i = tp.anchorLine; i <= tp.endLine && i < parsedLines.length; i++) {
+        const p = parsedLines[i];
+        if (p.isBlank) continue;
+        if (p.isCommentOnly) { p.commentRole = 'label'; continue; }
+        if (isLabelOrMacroOnly(p)) continue; // tool length check block
+        break;
+      }
+    }
+  }
+
   /**
    * Mark N-number labels that a GOTO (or M99 Pn) jumps to. These are not
    * just sequence numbers, so they are compared even when N-numbers are ignored.
@@ -975,6 +1037,22 @@ const DiffEngine = (() => {
   function classifyTokens(parsedA, parsedB, rules, modalA, modalB, ctxA, ctxB) {
     rules = rules || {};
     const tokenDiffs = [];
+
+    // --- Commented-out code: (G0 Z1.) on one side, live G0 Z1. on the other ---
+    const isLive = p => !p.isBlank && !p.isCommentOnly && p.tokens.length > 0;
+    const ccA = commentedCode(parsedA, rules), ccB = commentedCode(parsedB, rules);
+    if ((ccA && isLive(parsedB)) || (ccB && isLive(parsedA))) {
+      const sub = ccA ? classifyTokens(ccA, parsedB, rules) : classifyTokens(parsedA, ccB, rules);
+      const cTok = p => p.tokens.filter(t => t.type === 'comment');
+      tokenDiffs.push({ field: 'commentedOut', severity: 'critical',
+        leftVal: parsedA.raw, rightVal: parsedB.raw,
+        leftTokens: ccA ? cTok(parsedA) : [], rightTokens: ccB ? cTok(parsedB) : [] });
+      // Also list what differs in the code itself (highlight only on the live side)
+      for (const d of sub.tokenDiffs) {
+        tokenDiffs.push({ ...d, leftTokens: ccA ? [] : d.leftTokens, rightTokens: ccB ? [] : d.rightTokens });
+      }
+      return { severity: 'critical', tokenDiffs };
+    }
     // Lines that write or shift offsets: values here are offset data, not moves
     const offsetLine = isOffsetSetLine(parsedA) || isOffsetSetLine(parsedB);
     // Incremental (G91): small errors add up line after line, so no tolerance
@@ -1080,8 +1158,14 @@ const DiffEngine = (() => {
     // --- Comments (respecting ignore rules) ---
     const cA = commentText(parsedA, rules);
     const cB = commentText(parsedB, rules);
-    if (cA !== cB) {
-      tokenDiffs.push({ field: 'comment', severity: 'critical',
+    // Only sides that have a compared comment decide the role
+    const roles = [];
+    if (cA) roles.push(commentRole(parsedA, rules));
+    if (cB) roles.push(commentRole(parsedB, rules));
+    const ignorable = roles.length > 0 && roles.every(r => r === 'label' || r === 'header');
+    if (cA !== cB && !ignorable) {
+      const field = roles.includes('code') ? 'commentedCode' : roles.includes('tool') ? 'toolComment' : 'comment';
+      tokenDiffs.push({ field, severity: 'critical',
         leftVal: parsedA.comment, rightVal: parsedB.comment,
         leftTokens: comparedCommentTokens(parsedA, rules),
         rightTokens: comparedCommentTokens(parsedB, rules) });
@@ -1717,6 +1801,10 @@ const DiffEngine = (() => {
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);
     const rightToolpaths = segmentIntoToolpaths(rightLines, rightParsed);
 
+    // Comment roles (header / toolpath label lines are not compared)
+    markCommentRoles(leftParsed, leftToolpaths);
+    markCommentRoles(rightParsed, rightToolpaths);
+
     // Match toolpaths between files (two-tier: key-based then content similarity)
     const tpMatches = matchToolpaths(leftToolpaths, rightToolpaths, leftParsed, rightParsed, rules);
 
@@ -1788,7 +1876,11 @@ const DiffEngine = (() => {
   }
 
   /** Two lines are the same kind if they share at least half their word letters. */
-  function sameKind(pa, pb) {
+  function sameKind(pa, pb, rules) {
+    // A commented-out line pairs with the live code it came from
+    const ca = commentedCode(pa, rules), cb = commentedCode(pb, rules);
+    if (ca && !pb.isCommentOnly) return sameKind(ca, pb, rules);
+    if (cb && !pa.isCommentOnly) return sameKind(pa, cb, rules);
     if (pa.isCommentOnly && pb.isCommentOnly) return true;
     const a = wordLetters(pa), b = wordLetters(pb);
     if (a.size === 0 || b.size === 0) return false;
@@ -1860,7 +1952,7 @@ const DiffEngine = (() => {
         const li = leftIdxMap[removes[r].leftIdx];
         let match = -1;
         for (let a = searchFrom; a < adds.length; a++) {
-          if (sameKind(leftParsed[li], rightParsed[rightIdxMap[adds[a].rightIdx]])) { match = a; break; }
+          if (sameKind(leftParsed[li], rightParsed[rightIdxMap[adds[a].rightIdx]], rules)) { match = a; break; }
         }
         if (match < 0) continue;
         emitRemoved(r);

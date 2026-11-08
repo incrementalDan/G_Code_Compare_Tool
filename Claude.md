@@ -360,7 +360,8 @@ This list will grow — add new rules to classifyTokens only.
 | Unparsed text | critical | Unreadable characters differ (stray *, X1..5) |
 | No decimal | critical | Only with setting decimalPointMatters: X1 vs X1. on X/Y/Z/A/B/C/I/J/K/R/Q (zero exempt) |
 | Jump label | critical | N label targeted by GOTO / M99 P differs (even with Ignore N-numbers) |
-| Comment content | critical | Comment text difference (after ignore rules) |
+| Comment content | critical | Comment text difference (after ignore rules), by role — see Comment roles |
+| Commented-out code | critical | (G0 Z1.) vs live G0 Z1.: paired (sameKind), field commentedOut + inner code diffs |
 | Macros | critical | Any # token or macro statement (IF/GOTO/...) difference; numbers compared as numbers (5. = 5.0) |
 | Expression words | critical | X[#101+1] / X#101 text difference |
 | Params / other words | critical | R/P/Q/L or unrecognized letter difference |
@@ -370,6 +371,16 @@ This list will grow — add new rules to classifyTokens only.
 | N-number | minor | Only when Ignore N-numbers is off |
 | O-number | minor | Program number difference |
 | Format | minor | G01 vs G1 (normalize off), case (ignore case off), whitespace (ignore whitespace off) — only when nothing else differs |
+
+## Comment roles (`commentRole`, `markCommentRoles`)
+
+- code: comment-only line whose text parses as G-code (commentedCode) -> critical
+- tool: comment-only line starting `T<n> -` (header tool list, tool-setting block) -> critical
+- note: any other comment, incl. inline comments on code lines -> critical
+- label: dividers, and comment-only lines from a toolpath's anchorLine to its first
+  real code line (length-check block skipped) -> not compared
+- header: comment-only lines before the first code line of the file -> not compared
+A comment diff is skipped only when every side that has a compared comment is label/header.
 
 ## Severity Naming Convention
 
