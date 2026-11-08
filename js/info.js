@@ -54,7 +54,9 @@ const Info = (() => {
       Splits each line into words: G, M, X/Y/Z, A/B/C, I/J/K, F, S, T, H, D,
       R/P/Q/L, N, O, macros (#, IF, GOTO…), comments, block delete <code>/</code>.
       Numbers like <code>1.</code> <code>.5</code> <code>-.25</code> <code>+1.</code> and <code>X 1.</code> are read.
-      Tracks the active motion mode (G0/G1/G2/G3/canned cycle) for lines that only have coordinates.</div></li>
+      Tracks the active motion mode (G0/G1/G2/G3/canned cycle) for lines that only have coordinates,
+      G90/G91, the last position and the active F. Finds the N labels a GOTO or M99 P jumps to.
+      Characters it cannot read (like <code>*</code> or <code>X1..5</code>) are kept and compared.</div></li>
     <li><span class="pass-num">2</span><div><b>Split into toolpaths</b>
       Two post layouts are recognised:
       <ul class="info-list">
@@ -79,7 +81,8 @@ const Info = (() => {
     <li><span class="pass-num">5</span><div><b>Compare each line pair</b>
       Every word is compared. See <a href="#info-always">Always checked</a>.</div></li>
     <li><span class="pass-num">6</span><div><b>Grade coordinate changes</b>
-      Coordinate-only changes are graded by size using the tolerance thresholds.</div></li>
+      Coordinate-only changes (incl. arc R on G2/G3) are graded by size using the tolerance thresholds.
+      Not in G91 (incremental) and not on offset lines (G10/G52/G92): there any change is flagged.</div></li>
     <li><span class="pass-num pass-filter">F</span><div><b>Your filters</b>
       Settings, tolerance and show/hide decide what is shown. Critical items always show.</div></li>
   </ol>
@@ -93,7 +96,10 @@ const Info = (() => {
   <table class="info-table info-rules">
     <tr><td>Motion mode change (G0 ↔ G1 ↔ G2/G3, canned cycles), incl. modal lines</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Axis or I/J/K on one side only</td><td>${RED}</td><td>${ALWAYS}</td></tr>
-    <tr><td>X/Y/Z/A/B/C/I/J/K value change</td><td>by size — see <a href="#info-filters">Tolerance</a></td><td>if over major</td></tr>
+    <tr><td>Axis or F on one side only, but same as the value already active (e.g. <code>Z-.5</code> repeated)</td><td>${AMBER}</td><td></td></tr>
+    <tr><td>X/Y/Z/A/B/C/I/J/K value change, and R on G2/G3 arcs</td><td>by size — see <a href="#info-filters">Tolerance</a></td><td>if over major</td></tr>
+    <tr><td>Any axis value change in G91 (incremental) — errors add up</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Characters that are not a word (stray <code>*</code>, mistyped <code>X1..5</code>)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
   </table>
 
   <h4>Tool and spindle</h4>
@@ -107,21 +113,34 @@ const Info = (() => {
   <table class="info-table info-rules">
     <tr><td>G54–G59 change</td><td>${PURPLE}</td><td>${ALWAYS}</td></tr>
     <tr><td>G54.1 P number change (P2 → P3, P#153)</td><td>${PURPLE}</td><td>${ALWAYS}</td></tr>
+    <tr><td>G10 (write offset), G52 (local shift), G92 with axes (preset): any value change, no tolerance</td><td>${PURPLE}</td><td>${ALWAYS}</td></tr>
   </table>
 
   <h4>Program flow</h4>
   <table class="info-table info-rules">
     <tr><td>M-codes (any added, removed, or changed)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Other G-codes (G43, G90/G91, G17, G28…)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
-    <tr><td>Macros: #vars, IF/GOTO/WHILE, X[#101+1] (compared as text)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
-    <tr><td>R/P/Q/L and any other letter (U, V, W, E…)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Macros: #vars, IF/GOTO/WHILE, X[#101+1] (compared as text; numbers as numbers, <code>5.</code> = <code>5.0</code>)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>N label that a GOTO or M99 P jumps to (even with Ignore N-numbers on)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>R/P/Q/L (canned cycle R = retract plane) and any other letter (U, V, W, E…)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Program number O</td><td>${AMBER}</td><td></td></tr>
   </table>
+
+  <h4>Comments</h4>
+  <table class="info-table info-rules">
+    <tr><td>Commented-out code, e.g. <code>(G0 Z1.)</code>. Paired with the live line it came from and marked; code changes inside are listed too</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Tool lines <code>(T33 - ID=… OOH=… HLDR=…)</code> in the header list and tool-setting block</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Notes: any other comment in the code, incl. comments at the end of a code line</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Fixture line <code>(FIXTURE = …)</code> — only when both files have one (older files don't)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Not compared: the comment block at the top of the file (name, date, machine), dividers <code>(-----)</code>, and toolpath label comments (job/tool, operation, strategy, length-check title)</td><td>—</td><td></td></tr>
+  </table>
+  <p class="info-note">"Ignore comments ( )" / "Ignore comments ;" in Settings still turn off all comment checks of that type.</p>
 
   <h4>Added / removed lines</h4>
   <p>A line on one side only shows as ${GREEN} or ${BURG}. It still shows inside a hidden
   toolpath if it has an M, T, H, D, S, F, macro, comment, non-motion G, work offset, or <code>/</code>.
-  Plain moves in a hidden toolpath stay hidden.</p>
+  An added or removed <b>rapid (G0) move</b> inside a matched toolpath also always shows.
+  Other plain moves in a hidden toolpath stay hidden.</p>
 </section>
 
 <section id="info-filters" class="info-card">
@@ -130,15 +149,16 @@ const Info = (() => {
   <h4>Comparison rules <span class="info-where">⚙ Settings</span></h4>
   <table class="info-table">
     <tr><th>Setting</th><th>Default</th><th>When ON</th><th>When OFF</th></tr>
-    <tr><td>Ignore comments ( )</td><td>${OFF}</td><td>( ) comments not compared</td><td>Comment change = ${RED}</td></tr>
-    <tr><td>Ignore comments ;</td><td>${ON}</td><td>; comments not compared</td><td>Comment change = ${RED}</td></tr>
+    <tr><td>Ignore comments ( )</td><td>${OFF}</td><td>( ) comments not compared</td><td>See <a href="#info-always">Comments</a></td></tr>
+    <tr><td>Ignore comments ;</td><td>${ON}</td><td>; comments not compared</td><td>See <a href="#info-always">Comments</a></td></tr>
     <tr><td>Ignore whitespace</td><td>${ON}</td><td>Spaces don't matter</td><td>Spacing-only change = ${AMBER}</td></tr>
     <tr><td>Ignore case</td><td>${ON}</td><td>Upper/lower case don't matter</td><td>Case-only change = ${AMBER}</td></tr>
     <tr><td>Normalize G/M codes</td><td>${ON}</td><td>G01 = G1, M03 = M3</td><td>G01 vs G1 = ${AMBER}</td></tr>
     <tr><td>Ignore N-numbers</td><td>${ON}</td><td>N numbers not compared</td><td>N change = ${AMBER}</td></tr>
     <tr><td>Ignore block delete /</td><td>${OFF}</td><td>/ not compared</td><td>/ on one side = ${RED}</td></tr>
+    <tr><td>No decimal: X1 ≠ X1.</td><td>${OFF}</td><td><code>X1</code> vs <code>X1.</code> = ${RED} (X/Y/Z/A/B/C/I/J/K/R/Q; zero never flagged). Use if your control reads X1 as 0.0001".</td><td><code>X1</code> = <code>X1.</code></td></tr>
   </table>
-  <p class="info-note">Number format never matters: <code>X1.</code> = <code>X1.0000</code> = <code>X+1</code>, <code>T01</code> = <code>T1</code>.</p>
+  <p class="info-note">Number format otherwise never matters: <code>X1.</code> = <code>X1.0000</code> = <code>X+1</code>, <code>T01</code> = <code>T1</code>.</p>
 
   <h4>Tolerance <span class="info-where">⚙ Settings + TOL</span></h4>
   <p>Uses the biggest coordinate change on the line.</p>
@@ -184,6 +204,26 @@ const Info = (() => {
   Use the F list when a value looks wrong.</p>
 </section>
 
+<section id="info-tools" class="info-card">
+  <h3>Tool Table <span class="info-where">Tool Table button</span></h3>
+  <p>One row per tool number, left vs right, plus the fixture line at the top.
+  Click a tool to jump to its tool call.</p>
+  <table class="info-table info-kv">
+    <tr><th>Column</th><th>How it is found</th></tr>
+    <tr><td>ID, Description, OOH, Holder, LC</td><td>The tool comment line <code>(T33 - ID=… = desc - OOH=… - HLDR=… -LC-…)</code>. Header list first, tool-setting block fills gaps. Old posts: <code>PRODID=</code> is the ID.</td></tr>
+    <tr><td>Gauge</td><td><code>(CHECKING LENGTH OF TOOL 62 = GAUGE 5.8865)</code></td></tr>
+    <tr><td>Toolpaths</td><td>How many toolpaths use the tool (G100 calls + same-tool toolpaths). Info only.</td></tr>
+  </table>
+  <h4>Warnings (per file)</h4>
+  <ul class="info-list">
+    <li><b>not in header list</b> — tool is called but has no line in the header tool list.</li>
+    <li><b>listed, never used</b> — in the tool list but never called.</li>
+    <li><b>H33 ≠ T32 / D33 ≠ T32</b> — offset number on the G100 line does not match the tool.</li>
+  </ul>
+  <p class="info-note">A value is ${RED} only when <b>both</b> files have it and it differs (OOH <code>2</code> = <code>2.0</code>).
+  A value in one file only is shown dim and not flagged. Same for the fixture line.</p>
+</section>
+
 <section id="info-colors" class="info-card">
   <h3>Colours</h3>
   <table class="info-table info-kv info-colors">
@@ -204,12 +244,16 @@ const Info = (() => {
   <ul class="info-list">
     <li><b>No simulation.</b> It compares text, not toolpath shape. No backplot, no collision check.</li>
     <li><b>Macro math is not calculated.</b> <code>#1=2*3</code> vs <code>#1=6</code> shows as a change.</li>
-    <li><b>Modal states other than motion</b> (G90/G91, G20/G21, G17–G19, G43 active…) are only flagged
+    <li><b>Modal states other than motion and G90/G91</b> (G20/G21, G17–G19, G43 active…) are only flagged
       on the line where they change, not on every line after.</li>
-    <li><b>Missing axis = critical</b> even when the machine would stay in the same place.</li>
+    <li><b>Repeated-word check</b> only trusts the last written value. After G28/G30/G53, G100, a work offset or
+      rotation change, a canned cycle, G91 or a macro, a word on one side only is critical again.</li>
     <li><b>One tolerance for all axes.</b> Rotary A/B/C (degrees) and I/J/K use the same thresholds as X/Y/Z.</li>
     <li><b>Blank lines</b> are not compared.</li>
-    <li><b>Stray characters</b> that are not a letter + number (like <code>%</code> or a lone <code>X</code>) are skipped.</li>
+    <li><b>Top-of-file comments are not compared</b>, incl. a fixture line like <code>(FIXTURE = …)</code>. Tool lines there are.</li>
+    <li><b>Commented-out code</b> is spotted when the comment reads as G-code (a G/M/T/S/F or axis word, nothing unreadable).
+      A comment of plain words is a note.</li>
+    <li><b>G92</b> counts as an offset only with axis words. <code>G92 S.. Q..</code> (spindle clamp in turning) is a normal G-code.</li>
     <li><b>Toolpath detection</b> is tuned for Fusion 360 posts on Brother (G100 tool calls).
       Other posts fall back to G100-only or comment-based sections. Check toolpath labels look right.</li>
     <li><b>Very different large toolpaths</b> (thousands of edits) are compared line by line in order.

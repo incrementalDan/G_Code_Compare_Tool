@@ -20,6 +20,7 @@
       <button class="btn" id="btn-save-left">Save Left</button>
       <button class="btn" id="btn-save-right">Save Right</button>
       <button class="btn" id="btn-feeds" title="Compare spindle speeds and feeds per toolpath">Feeds &amp; Speeds</button>
+      <button class="btn" id="btn-tools" title="Compare the tool list (ID, OOH, holder, gauge) and fixture">Tool Table</button>
       <button class="btn btn-accent" id="btn-example">Load Example</button>
     </div>
     <div class="header-icons">
@@ -100,6 +101,10 @@
         <label for="opt-ignore-block-delete">Ignore block delete /</label>
         <input type="checkbox" id="opt-ignore-block-delete">
       </div>
+      <div class="setting-row" title="Turn on if your control reads X1 as the smallest increment (0.0001&quot; / 0.001 mm) instead of 1.">
+        <label for="opt-decimal-point-matters">No decimal: X1 ≠ X1.</label>
+        <input type="checkbox" id="opt-decimal-point-matters">
+      </div>
     </div>
 
     <div class="settings-section">
@@ -158,6 +163,7 @@
   <script src="js/editor.js"></script>
   <script src="js/app.js"></script>
   <script src="js/feeds.js"></script>
+  <script src="js/tools.js"></script>
   <script src="js/info.js"></script>
 </body>
 </html>

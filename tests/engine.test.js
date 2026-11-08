@@ -6,8 +6,10 @@ const vm = require('vm');
 const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'diff-engine.js'), 'utf8');
 const ctx = {};
 const feedsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'feeds.js'), 'utf8');
-vm.runInNewContext(src + '\n' + feedsSrc + '\nthis.DiffEngine = DiffEngine; this.Feeds = Feeds;', ctx);
+const toolsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'tools.js'), 'utf8');
+vm.runInNewContext(src + '\n' + feedsSrc + '\n' + toolsSrc + '\nthis.DiffEngine = DiffEngine; this.Feeds = Feeds; this.Tools = Tools;', ctx);
 const DE = ctx.DiffEngine;
+const TL = ctx.Tools;
 const FD = ctx.Feeds;
 
 const DEFAULT_RULES = {
@@ -131,7 +133,7 @@ test('GOTO is not read as a program number', () =>
   eq(DE.parseGCodeLine('IF [#1 GT 2] GOTO10').programNumber, null));
 test('X[#101+1] vs X[#101+2] is critical', () => eq(types(['G1 X[#101+1]'], ['G1 X[#101+2]']), 'critical'));
 test('#101=SIN[30] vs SIN[45] is critical', () => eq(types(['#101=SIN[30]'], ['#101=SIN[45]']), 'critical'));
-test('nested bracket comment compared in full', () => eq(types(['(A(B)C)'], ['(A(B)D)']), 'critical'));
+test('nested bracket comment compared in full', () => eq(types(['G0 X0.', '(A(B)C)'], ['G0 X0.', '(A(B)D)']), 'equal,critical'));
 
 console.log('Line pairing');
 test('inserted move lines up exactly', () =>
@@ -238,6 +240,179 @@ test('feed comparison flags a changed cut feed', () => {
   const rows = FD.compare({ leftParsed: r.leftParsed, rightParsed: r.rightParsed,
     leftToolpaths: r.leftToolpaths, rightToolpaths: r.rightToolpaths, tpMatches: r.tpMatches });
   eq(rows[0].cells.cut.changed + ' ' + rows[0].cells.plunge.changed, 'true false');
+});
+
+
+console.log('\nAudit fixes');
+// Type of the op for a given left line index
+function opAt(left, right, leftIdx, rules) {
+  const op = diff(left, right, rules).ops.find(o => o.leftIdx === leftIdx);
+  return op ? op.type : 'none';
+}
+function fieldsAt(left, right, leftIdx, rules) {
+  const op = diff(left, right, rules).ops.find(o => o.leftIdx === leftIdx);
+  return op && op.tokenDiffs ? op.tokenDiffs.map(d => d.field).join(',') : '';
+}
+test('no decimal: X1 = X1. by default', () => eq(opAt(['G1 X1 Y2.'], ['G1 X1. Y2.'], 0), 'equal'));
+test('no decimal: X1 vs X1. critical when setting on', () =>
+  eq(opAt(['G1 X1 Y2.'], ['G1 X1. Y2.'], 0, { decimalPointMatters: true }), 'critical'));
+test('no decimal: X0 vs X0. never flagged', () =>
+  eq(opAt(['G1 X0 Y2.'], ['G1 X0. Y2.'], 0, { decimalPointMatters: true }), 'equal'));
+test('no decimal: R in canned cycle checked too', () =>
+  eq(fieldsAt(['G81 Z-1. R1 F10.'], ['G81 Z-1. R1. F10.'], 0, { decimalPointMatters: true }), 'decimal-R'));
+test('stray character is critical', () => eq(opAt(['G1 X1. Y2.'], ['G1 X1. Y2. *'], 0), 'critical'));
+test('mistyped number (X1..5) is critical', () => eq(opAt(['G1 X1.5'], ['G1 X1..5'], 0), 'critical'));
+test('same stray % on both sides is equal', () => eq(opAt(['%'], ['%'], 0), 'equal'));
+test('G10 offset value change is work offset, no tolerance', () =>
+  eq(opAt(['G10 L2 P1 X-10.0005'], ['G10 L2 P1 X-10.'], 0), 'workoffset'));
+test('G52 shift change is work offset', () => eq(opAt(['G52 X1.0005'], ['G52 X1.'], 0), 'workoffset'));
+test('G92 with axes is work offset', () => eq(opAt(['G92 X0. Y0.'], ['G92 X0. Y.0002'], 0), 'workoffset'));
+test('G92 S Q (spindle clamp) is not work offset', () => eq(opAt(['G92 S3000 Q100'], ['G92 S3500 Q100'], 0), 'critical'));
+test('added G52 line is marked work offset', () => {
+  const op = diff(['G0 X0.', 'G0 X1.'], ['G0 X0.', 'G52 X1.', 'G0 X1.']).ops.find(o => o.type === 'added');
+  eq(!!op.workOffset, true);
+});
+test('incremental G91 move: tiny change is critical', () =>
+  eq(opAt(['G91 G1 X.0009 F10.', 'G1 X.0009'], ['G91 G1 X.0009 F10.', 'G1 X0.'], 1), 'critical'));
+test('absolute move: tiny change still within tolerance', () =>
+  eq(opAt(['G90 G1 X1.0004 F10.'], ['G90 G1 X1. F10.'], 0), 'tolerance'));
+test('GOTO label change is critical even with N ignored', () => {
+  const L = ['IF[#1 GT 1] GOTO 100', 'G1 X1. F10.', 'N100 M1'];
+  const R = ['IF[#1 GT 1] GOTO 100', 'G1 X1. F10.', 'N101 M1'];
+  eq(opAt(L, R, 2), 'critical');
+});
+test('plain N change still ignored', () => eq(opAt(['N10 G1 X1. F10.'], ['N20 G1 X1. F10.'], 0), 'equal'));
+test('arc R small change graded by tolerance', () =>
+  eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5004'], 1), 'tolerance'));
+test('arc R big change is critical', () =>
+  eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.6'], 1), 'critical'));
+test('canned cycle R change stays critical', () =>
+  eq(opAt(['G81 Z-1. R.1 F10.'], ['G81 Z-1. R.1004 F10.'], 0), 'critical'));
+test('macro number format: #100=5. equals #100=5.0', () => eq(opAt(['#100=5.'], ['#100=5.0'], 0), 'equal'));
+test('macro value change still critical', () => eq(opAt(['#100=5.'], ['#100=6.'], 0), 'critical'));
+test('redundant Z (same as active) is minor', () =>
+  eq(opAt(['G1 Z-.5 F10.', 'G1 X1. Y2.'], ['G1 Z-.5 F10.', 'G1 X1. Y2. Z-.5'], 1), 'minor'));
+test('extra Z with different value stays critical', () =>
+  eq(opAt(['G1 Z-.5 F10.', 'G1 X1. Y2.'], ['G1 Z-.5 F10.', 'G1 X1. Y2. Z-.6'], 1), 'critical'));
+test('redundant F (same as active) is minor', () =>
+  eq(opAt(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G1 X1. F10.'], 1), 'minor'));
+test('extra F with new value stays critical', () =>
+  eq(opAt(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G1 X1. F12.'], 1), 'critical'));
+test('redundant word after G28 is not trusted', () =>
+  eq(opAt(['G0 Z1.', 'G28 G91 Z0.', 'G90 G0 X1.'], ['G0 Z1.', 'G28 G91 Z0.', 'G90 G0 X1. Z1.'], 2), 'critical'));
+test('added rapid always shows', () => {
+  const op = diff(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G0 Z-1.', 'G1 X1.']).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('added plain feed move does not always show', () => {
+  const op = diff(['G1 X0. F10.', 'G1 X2.'], ['G1 X0. F10.', 'G1 X1.', 'G1 X2.']).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, false);
+});
+test('M05 / M09 lines join the next toolpath (old layout)', () => {
+  const lines = ['%', 'O1000', 'G90', '', '(J - T1)', '(OP1)', 'G100 T1 X0. Y0. S1000 M3', 'G1 X1. F10.',
+    'M09', 'M05', '', '(J - T2)', '(OP2)', 'G100 T2 X0. Y0. S1000 M3', 'G1 X2. F10.', 'M30'];
+  const T = DE.segmentIntoToolpaths(lines, lines.map(DE.parseGCodeLine)).filter(t => t.type === 'toolpath');
+  eq(T[1].startLine, 8);
+});
+
+console.log('\nComments');
+const BODY = ['G0 X0. Y0.', 'G1 Z-.1 F10.'];
+test('note in code changed = critical', () => eq(opAt(BODY.concat(['(CHK A)']), BODY.concat(['(CHK B)']), 2), 'critical'));
+test('added note always shows', () => {
+  const op = diff(BODY.concat(['G1 X1.']), BODY.concat(['(CHANGE FEED HERE)', 'G1 X1.'])).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('inline comment on code line = critical', () => eq(opAt(['G0 X0. (A)'], ['G0 X0. (B)'], 0), 'critical'));
+test('top-of-file header comment ignored', () =>
+  eq(opAt(['(POSTED 1.1.2026)', 'G0 X0.'], ['(POSTED 2.2.2026)', 'G0 X0.'], 0), 'equal'));
+test('header tool line change = critical', () =>
+  eq(fieldsAt(['(T1 - ID=A-1 - OOH=0.75)', 'G0 X0.'], ['(T1 - ID=A-1 - OOH=1.0)', 'G0 X0.'], 0), 'toolComment'));
+test('tool ID change = critical', () =>
+  eq(opAt(['(T1 - ID=A-1 - OOH=0.75)', 'G0 X0.'], ['(T1 - ID=A-2 - OOH=0.75)', 'G0 X0.'], 0), 'critical'));
+test('commented-out code paired with live line', () =>
+  eq(types(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z1.)'])), 'equal,equal,critical'));
+test('commented-out code shows field commentedOut', () =>
+  eq(fieldsAt(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z1.)']), 2), 'commentedOut'));
+test('commented-out code with changed value lists the change', () =>
+  eq(fieldsAt(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z2.)']), 2), 'commentedOut,axis-Z'));
+test('added commented-out code always shows', () => {
+  const op = diff(BODY.concat(['G1 X1.']), BODY.concat(['(M00)', 'G1 X1.'])).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('plain words are not code: (ADAPTIVE) (CLEAR TLO)', () => {
+  const p = DE.parseGCodeLine('(CLEAR TLO)');
+  eq(types(BODY.concat(['(ADAPTIVE)']), BODY.concat(['(CLEAR TLO)'])), 'equal,equal,critical');
+});
+// Divider layout: label comments under the divider are not compared
+const tpL = ['%', 'O1000', '(T1 - ID=A-1)', 'G90', '', '(----------)', '(JOB - 1/4 EM)', '(POCKET1)', '(POCKET)',
+  'G100 T1 X0. Y0. Z1. S1000 M3', 'G1 Z-.1 F10.', 'G0 Z1.', 'M30'];
+test('toolpath label comment change ignored', () => {
+  const R = tpL.map(l => l === '(JOB - 1/4 EM)' ? '(JOB - 1/4 EM NEW DESC)' : l);
+  eq(opAt(tpL, R, 6), 'equal');
+});
+test('ignore ( ) setting still turns all off', () =>
+  eq(opAt(BODY.concat(['G0 Z1.']), BODY.concat(['(G0 Z1.)']), 2, { ignoreParenComments: true }), 'removed'));
+test('real file: O1268 header tool OOH change caught', () => {
+  const L = fs.readFileSync(path.join(__dirname, '..', 'Examples', 'O1268.NC'), 'utf8').split(/\r?\n/);
+  const R = L.slice(); R[10] = R[10].replace('OOH=0.75', 'OOH=0.80');
+  const ops = diff(L, R).ops.filter(o => o.type !== 'equal');
+  eq(ops.map(o => o.type + ':' + o.leftIdx).join(','), 'critical:10');
+});
+
+console.log('\nFixture and Tool Table');
+test('fixture change caught when both files have one', () =>
+  eq(opAt(['(PART)', '(FIXTURE = F57)', 'G0 X0.'], ['(PART)', '(FIXTURE = F58)', 'G0 X0.'], 1), 'critical'));
+test('fixture missing in one file is not flagged', () => {
+  const ops = diff(['(PART)', '(FIXTURE = F57)', '(MACHINE)', 'G0 X0.'], ['(PART)', '(MACHINE)', 'G0 X0.']).ops;
+  eq(ops.filter(o => o.alwaysShow).length, 0);
+});
+test('fixture does not pair with another header comment', () => {
+  const ops = diff(['(PART A)', '(FIXTURE = F57)', 'G0 X0.'], ['(PART B)', '(POSTED 1.1)', 'G0 X0.']).ops;
+  eq(ops.filter(o => o.alwaysShow).length, 0);
+});
+test('parse new-layout tool line', () => {
+  const t = TL.parseToolComment('T33 - ID=A-176 = 1/8 ENDMILL 3FL .4375LOC UNCOATED - OOH=0.75 - HLDR=NBT30-SK13-90 ER16 EX 2.35OOH 12MM -LC-');
+  eq([t.tool, t.id, t.desc, t.ooh, t.holder, t.lc].join('|'), '33|A-176|1/8 ENDMILL 3FL .4375LOC UNCOATED|0.75|NBT30-SK13-90 ER16 EX 2.35OOH 12MM|');
+});
+test('parse old-layout tool line (PRODID)', () => {
+  const t = TL.parseToolComment('T51 - 3/8 ROUGHER EM 7FL 1.0LOC - HLDR=NBT30-SK13C-90 85MM - OOH=1.2 - PRODID=A-61 -LC-72');
+  eq([t.tool, t.id, t.desc, t.ooh, t.holder, t.lc].join('|'), '51|A-61|3/8 ROUGHER EM 7FL 1.0LOC|1.2|NBT30-SK13C-90 85MM|72');
+});
+test('parse multi-part description', () =>
+  eq(TL.parseToolComment('T62 - ID=A-182 = 3/8 AXFPS BULL - ROUGHER - OOH=1.28 - HLDR=X -LC-176').desc, '3/8 AXFPS BULL - ROUGHER'));
+const o1268L = o1268.L;
+function toolRows(L, R) { return TL.compare(diff(L, R)); }
+test('O1268 tool table: 6 tools, no changes against itself', () => {
+  const t = toolRows(o1268L, o1268L);
+  eq(t.rows.length + ' ' + t.rows.filter(r => r.changed).length + ' ' + t.fixture.left, '6 0 F57 100MM RISER - 45487');
+});
+test('O1268 gauge and usage read', () => {
+  const r = toolRows(o1268L, o1268L).rows.find(x => x.tool === 62);
+  eq(r.cells.gauge.left + ' ' + (+r.cells.used.left > 0), '5.8865 true');
+});
+test('OOH change shows in tool table', () => {
+  const R = o1268L.slice(); R[10] = R[10].replace('OOH=0.75', 'OOH=0.80');
+  const r = toolRows(o1268L, R).rows.find(x => x.tool === 33);
+  eq(r.cells.ooh.changed + ' ' + r.cells.id.changed, 'true false');
+});
+test('OOH 2 = 2.0 not flagged', () => {
+  const R = o1268L.slice(); R[9] = R[9].replace('OOH=2 ', 'OOH=2.0 ');
+  eq(toolRows(o1268L, R).rows.find(x => x.tool === 32).cells.ooh.changed, false);
+});
+test('fixture change in tool table', () => {
+  const R = o1268L.map(l => l.replace('F57 100MM', 'F58 100MM'));
+  eq(toolRows(o1268L, R).fixture.changed, true);
+});
+const mini = h => ['%', 'O1000'].concat(h, ['G90', '', '(----------)', '(J)', '(OP1)', '(POCKET)',
+  'G100 T1 X0. Y0. Z1. G43 H1 D2 S1000 M3', 'G1 Z-.1 F10.', 'G0 Z1.', 'M30']);
+test('H/D mismatch, not-listed, never-used warnings', () => {
+  const t = toolRows(mini(['(T5 - ID=X)']), mini(['(T5 - ID=X)']));
+  const w = t.rows.map(r => 'T' + r.tool + ':' + r.warnings.left.join('/')).join(' ');
+  eq(w, 'T1:D2 ≠ T1/not in header list T5:listed, never used');
+});
+test('value in one file only is not red', () => {
+  const t = toolRows(mini(['(T1 - ID=X - OOH=1)']), mini(['(T1 - ID=X)']));
+  eq(t.rows[0].cells.ooh.changed + ' ' + t.rows[0].cells.ooh.oneSided, 'false true');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);
