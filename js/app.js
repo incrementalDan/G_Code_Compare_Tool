@@ -23,6 +23,7 @@ const App = (() => {
   let currentDiffIndex = -1;
   let currentToolpaths = { left: [], right: [] };
   let currentTpMatches = []; // toolpath match pairs from diff engine
+  let lastDiffResult = null; // full engine result (parsed lines, toolpaths) for Feeds & Speeds
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
 
@@ -425,6 +426,7 @@ N120 M30`;
       majorThreshold: settings.majorThreshold
     });
     currentDiff = diffResult.ops;
+    lastDiffResult = diffResult;
     const prevToolpaths = currentToolpaths;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
     currentTpMatches = diffResult.tpMatches || [];
@@ -813,5 +815,11 @@ N120 M30`;
     setupGlobalDragDrop();
   });
 
-  return { runDiff, loadExample };
+  /** Parsed lines and toolpaths from the last compare (used by the Feeds & Speeds popup). */
+  function getDiffContext() {
+    if (!lastDiffResult || (!Editor.getValue('left') && !Editor.getValue('right'))) return null;
+    return lastDiffResult;
+  }
+
+  return { runDiff, loadExample, getDiffContext };
 })();

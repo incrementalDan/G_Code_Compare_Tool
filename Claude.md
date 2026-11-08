@@ -25,7 +25,12 @@ gcode-compare/
 │   ├── diff-engine.js  — parser, toolpath segmentation, LCS, token classification
 │   ├── editor.js       — single-layer line-div editor, rendering, decorations
 │   ├── app.js          — UI wiring, settings, state, diff coordination
+│   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
 │   └── info.js         — in-app Info popup: what is / isn't checked
+├── posts/              — shop Fusion post processors (reference only, not loaded)
+│   ├── Brother Speedio M multi-tasking - APW_v8_9_1.cps
+│   └── Brother Speedio R - APW_R_v2.cps
+├── Examples/           — O1158 (old layout), O1268 (new divider layout, R post)
 ├── tests/
 │   └── engine.test.js  — diff engine tests (run: node tests/engine.test.js)
 └── CLAUDE.md
@@ -47,6 +52,7 @@ Sections (keep related items grouped in the right one):
   4 Line up lines, 5 Compare, 6 Tolerance, F Your filters)
 - Always checked — grouped: Motion and position / Tool and spindle /
   Work offsets / Program flow / Added-removed lines
+- Feeds & Speeds — how each column is found (keep in sync with feeds.js)
 - Filters you control — Comparison rules table, Tolerance table, Show/hide
 - Colours
 - Not checked / limits — anything a user must NOT rely on
@@ -84,8 +90,18 @@ Plain Node, no npm. Add a test for every new rule.
 - Used in fingerprints for bare coordinate lines (no explicit G-code)
 - Used in classifyTokens: a bare move under G0 vs under G1 is a critical diff
 
-**Toolpath segmentation** (`segmentIntoToolpaths`) — Brother Speedio / Fusion 360:
-- Pass 1 (primary): blank line followed by 2+ consecutive comment-only lines
+**Toolpath segmentation** (`segmentIntoToolpaths`) — Brother Speedio / Fusion 360.
+Two post layouts. The new one is tried first (`segmentByDividers`):
+- New layout (APW M post v8.8.1+, R post v2.1+): a divider comment
+  `(----------)` (10+ dashes) starts each toolpath. Dividers with an M06 or no
+  motion before the next divider (header tool list, tool-setting block) are skipped.
+  The comment group directly above the first real code line (after the tool
+  length check IF/GOTO block) is [job - tool desc], operation name, strategy.
+  name = operation name, opType = strategy, jobTool = job/tool comment.
+  startLine = anchorLine = divider line. layout = 'divider'.
+- Old layout (layout = 'blank-comments'), used when no valid dividers:
+- Pass 1 (primary): blank line followed by 2+ consecutive comment-only lines.
+  Comments are [job - tool desc], operation name, [more]: name = 2nd comment.
 - Pass 2: finds G100 tool call lines (with T and X/Y or S or M03/M04)
 - Pass 3: associates each G100 to a comment-pair anchor within +20 lines forward
 - Expands preamble backward from each anchor (up to 40 lines). Absorbs:
@@ -101,7 +117,8 @@ Plain Node, no npm. Add a test for every new rule.
 - Fallback to comment-based sections if no anchors at all
 
 **Toolpath matching** (`matchToolpaths`):
-- Pass 1: key-based LCS on "name|opType|T{toolNumber}" strings
+- Pass 1: key-based LCS on "NAME|T{toolNumber}" (operation name + tool, so old
+  and new layout files of the same job match)
 - Pass 1b: content-similarity refinement when duplicate keys exist
 - Pass 2: content similarity fallback (LCS on fingerprints, threshold 0.5,
   +0.1 boost for matching tool number)
@@ -261,6 +278,24 @@ line-count mismatch warning (>10% difference), cursor position
 
 ---
 
+### Feeds & Speeds (`feeds.js`)
+
+- Button "Feeds & Speeds" opens a popup table: one row per matched toolpath,
+  left vs right, changed cells red (left struck → right), click name to jump.
+- `Feeds.analyzeFile(parsed, toolpaths)` walks lines with machine state
+  (position, motion mode, plane, G90/G91, canned cycle, modal F, RPM).
+- Engagement = feed moves between two rapids. Entry moves: Z-only down = plunge,
+  down + XY = ramp, vertical arc / G41-G42 = lead-in. Exit moves: Z-only up =
+  retract, up + XY / vertical arc / G40 = lead-out. Middle: feed with most
+  distance = cut; short different-feed runs before/after = lead-in/out (< 50% of
+  distance); higher = transition; lower = other; post high feed 200 / 5000 = high feed.
+- RPM: S on G100 or M03/M04 line, inherited by same-tool toolpaths. Ramp RPM: lone
+  S line that differs. Cycle: F on G73-G89 lines.
+- Every value is a Map value -> weight (distance); F list = every F with count.
+- Feed types are best guesses (post does not write movement type). Exact labels
+  would need the post's "Parametric feed" property (off today).
+- App exposes `App.getDiffContext()` (engine result incl. leftParsed/rightParsed).
+
 ## What Is NOT Built Yet
 
 ### 1. Per-Toolpath Tolerance Threshold Override
@@ -297,6 +332,7 @@ This list will grow — add new rules to classifyTokens only.
 | Type | Severity | How Detected |
 |---|---|---|
 | Work offset | workoffset (purple) | G54-G59 change in non-motion G-code set |
+| Work offset | workoffset (purple) | P (or P expression) change on a G54.1 line |
 | Motion mode | critical | Active G0/G1/G2/G3/canned mode differs (uses modal state) |
 | Non-motion G-codes | critical | Any other G-code set difference |
 | M-codes | critical | Any M-code set difference |

@@ -29,6 +29,7 @@ const Info = (() => {
   <a href="#info-passes">The passes</a>
   <a href="#info-always">Always checked</a>
   <a href="#info-filters">Filters</a>
+  <a href="#info-feeds">Feeds &amp; Speeds</a>
   <a href="#info-colors">Colours</a>
   <a href="#info-limits">Not checked</a>
   <a href="#info-nav">Navigation</a>
@@ -55,12 +56,20 @@ const Info = (() => {
       Numbers like <code>1.</code> <code>.5</code> <code>-.25</code> <code>+1.</code> and <code>X 1.</code> are read.
       Tracks the active motion mode (G0/G1/G2/G3/canned cycle) for lines that only have coordinates.</div></li>
     <li><span class="pass-num">2</span><div><b>Split into toolpaths</b>
-      A new toolpath starts at a blank line followed by 2+ comment lines (Fusion style).
-      A <code>G100</code> with T and X/Y, S, or M3/M4 within 20 lines gives the tool number.
-      Setup lines before it (G28, G53, M05, M09, rapids…) join that toolpath.
-      Also finds the Program Header and Program End (M30).</div></li>
+      Two post layouts are recognised:
+      <ul class="info-list">
+        <li><b>New</b> (APW M post v8.8.1+, R post v2.1+): each toolpath starts at a divider
+          comment <code>(-----)</code>. The comments just above the first code line are
+          job/tool, <b>operation name</b>, <b>strategy</b>. Dividers in the header tool list and
+          tool-setting block (followed by <code>M06</code>) are skipped.</li>
+        <li><b>Old</b>: a blank line then 2+ comment lines: job/tool, then <b>operation name</b>.
+          Setup lines before it (G28, G53, M05, M09, rapids…) join that toolpath.</li>
+      </ul>
+      A <code>G100</code> with T and X/Y, S, or M3/M4 gives the tool number. Toolpaths with no
+      G100 keep the previous tool. Also finds the Program Header and Program End (M30).</div></li>
     <li><span class="pass-num">3</span><div><b>Match toolpaths</b>
-      Pairs left and right toolpaths by name + operation + tool.
+      Pairs left and right toolpaths by operation name + tool, so an old-layout file matches a
+      new-layout file of the same job.
       Leftovers are paired if their content is at least 50% alike (+10% for same tool).
       Unmatched ones show as <i>(not in file)</i> on the other side.</div></li>
     <li><span class="pass-num">4</span><div><b>Line up lines</b>
@@ -96,7 +105,8 @@ const Info = (() => {
 
   <h4>Work offsets</h4>
   <table class="info-table info-rules">
-    <tr><td>G54–G59 (and G54.1) change</td><td>${PURPLE}</td><td>${ALWAYS}</td></tr>
+    <tr><td>G54–G59 change</td><td>${PURPLE}</td><td>${ALWAYS}</td></tr>
+    <tr><td>G54.1 P number change (P2 → P3, P#153)</td><td>${PURPLE}</td><td>${ALWAYS}</td></tr>
   </table>
 
   <h4>Program flow</h4>
@@ -148,6 +158,32 @@ const Info = (() => {
   <b>New</b> and <b>Swap Panes</b> clear them.</p>
 </section>
 
+<section id="info-feeds" class="info-card">
+  <h3>Feeds &amp; Speeds <span class="info-where">Feeds &amp; Speeds button</span></h3>
+  <p>A summary table: one row per toolpath, left vs right. Changed values show in red as
+  <span class="fd-old">left</span> → <span class="fd-new">right</span>. Click a toolpath name to jump to it.
+  Every F and S change is also flagged line by line in the main view.</p>
+  <table class="info-table info-kv">
+    <tr><th>Column</th><th>How it is found</th></tr>
+    <tr><td>RPM <span class="info-default on">EXACT</span></td><td>S on the G100 / M03 line. Toolpaths with no tool call keep the previous RPM.</td></tr>
+    <tr><td>Ramp RPM <span class="info-default on">EXACT</span></td><td>A lone S line (no M03 / G100) with a different RPM.</td></tr>
+    <tr><td>Plunge</td><td>Z-only feed move going down, at the start of a cut.</td></tr>
+    <tr><td>Ramp</td><td>Feed move going down while moving X/Y (incl. helix), at the start of a cut.</td></tr>
+    <tr><td>Lead-in</td><td>Start of a cut: vertical arc (G18/G19), G41/G42 move, or short moves at a different feed before the main cut feed.</td></tr>
+    <tr><td>Cut</td><td>The feed covering the most distance in each cut.</td></tr>
+    <tr><td>Lead-out</td><td>End of a cut: vertical arc, G40 move, rising move, or short different-feed moves after the main cut feed.</td></tr>
+    <tr><td>Transition</td><td>Feed higher than the cut feed, inside a cut.</td></tr>
+    <tr><td>High feed</td><td>The post's high feedrate (200 inch / 5000 mm).</td></tr>
+    <tr><td>Retract</td><td>Z-only feed move going up.</td></tr>
+    <tr><td>Cycle</td><td>Feed on a drill / tap cycle (G73–G89).</td></tr>
+    <tr><td>Other</td><td>Feed lower than the cut feed, inside a cut (reduced feed).</td></tr>
+    <tr><td>F list</td><td>Every F value in the toolpath with how many times it appears. Nothing is hidden.</td></tr>
+  </table>
+  <p class="info-note">A "cut" here means the feed moves between two rapid (G0) moves.
+  Feed types other than RPM are <b>likely</b>, not certain: the NC code does not say which feed is which.
+  Use the F list when a value looks wrong.</p>
+</section>
+
 <section id="info-colors" class="info-card">
   <h3>Colours</h3>
   <table class="info-table info-kv info-colors">
@@ -179,6 +215,8 @@ const Info = (() => {
     <li><b>Very different large toolpaths</b> (thousands of edits) are compared line by line in order.
       Everything still shows, but pairing may be off.</li>
     <li><b>Work offsets G154 Pn</b> are compared as normal G/P words, not as work offsets.</li>
+    <li><b>Feed types are guesses.</b> Feeds &amp; Speeds labels (plunge, ramp, lead-in…) come from tool motion.
+      RPM and Ramp RPM are exact.</li>
     <li><b>Hidden toolpaths</b> also dim the setup lines just above their separator (they belong to it).</li>
   </ul>
 </section>
@@ -191,6 +229,7 @@ const Info = (() => {
     <tr><td>Toolpath header bar</td><td>Shows the current toolpath. Click for the list; click a row to jump.</td></tr>
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
       Warns if line counts differ by more than 10%.</td></tr>
+    <tr><td>Feeds &amp; Speeds</td><td>Per-toolpath table of RPM and feeds, left vs right.</td></tr>
     <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file.</td></tr>
   </table>
 </section>
