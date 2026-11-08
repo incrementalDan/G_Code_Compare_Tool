@@ -315,14 +315,15 @@ const Feeds = (() => {
     for (const c of COLUMNS) html += `<th${c.exact ? ' class="fd-exact"' : ''}>${c.label}</th>`;
     html += `<th>All F</th></tr></thead><tbody>`;
     if (!rows.length) html += `<tr><td colspan="${COLUMNS.length + 2}" class="fd-none">No changes in feeds or speeds.</td></tr>`;
-    rows.forEach(row => {
+    rows.forEach((row, n) => {
       const idx = lastRows.indexOf(row);
+      const stripe = n % 2 ? 'fd-odd' : 'fd-even';
       const only = !row.left ? '<span class="fd-only">only in right</span>' : !row.right ? '<span class="fd-only">only in left</span>' : '';
-      html += `<tr class="${row.changed ? 'fd-row-changed' : ''}">` +
+      html += `<tr class="${stripe}${row.changed ? ' fd-row-changed' : ''}">` +
         `<td class="fd-name"><a href="#" data-row="${idx}" title="Jump to this toolpath">${tpLabel(row.left || row.right)}</a>${only}</td>`;
       for (const c of COLUMNS) html += cellHtml(row.cells[c.key]);
       html += `<td><button class="fd-allf-btn${row.allF.changed ? ' fd-changed-btn' : ''}" data-row="${idx}">F list</button></td></tr>`;
-      html += `<tr class="fd-allf-row" data-for="${idx}" hidden><td colspan="${COLUMNS.length + 2}">${allFHtml(row)}</td></tr>`;
+      html += `<tr class="fd-allf-row ${stripe}" data-for="${idx}" hidden><td colspan="${COLUMNS.length + 2}">${allFHtml(row)}</td></tr>`;
     });
     html += `</tbody></table></div>`;
     body.innerHTML = html;

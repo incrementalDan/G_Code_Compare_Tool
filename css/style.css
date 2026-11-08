@@ -970,14 +970,16 @@ input[type="checkbox"]:focus-visible {
 }
 .fd-table th.fd-exact { color: #9cdcfe; }
 .fd-table td { padding: 5px 8px; border-bottom: 1px solid #2d2d30; white-space: nowrap; vertical-align: top; }
-.fd-table tbody tr:hover td { background: #262629; }
+.fd-table tbody tr.fd-even td { background: #1e1e1e; }
+.fd-table tbody tr.fd-odd td { background: #2a2a2e; }
+.fd-table tbody tr:not(.fd-allf-row):hover td { background: #34343a; }
 .fd-name a { color: var(--text); text-decoration: none; }
 .fd-name a:hover { color: #4fc1ff; text-decoration: underline; }
 .fd-tool { color: #569cd6; font-weight: 700; }
 .fd-strategy { color: var(--text-dim); font-size: 11px; }
 .fd-only { margin-left: 6px; font-size: 10px; padding: 0 4px; border: 1px solid #7a5410; color: #ffaa33; }
 .fd-row-changed td.fd-name { border-left: 3px solid #c62828; }
-.fd-changed { background: var(--diff-major); }
+.fd-table tbody tr td.fd-changed { background: var(--diff-major); }
 .fd-old { color: #aaa; text-decoration: line-through; }
 .fd-arrow { color: #888; margin: 0 4px; }
 .fd-new { color: #ff8a80; font-weight: 700; }
@@ -989,7 +991,7 @@ input[type="checkbox"]:focus-visible {
 }
 .fd-allf-btn:hover { background: #444; }
 .fd-allf-btn.fd-changed-btn { border-color: #c62828; color: #ff8a80; }
-.fd-allf-row td { background: #1a1a1a; white-space: normal; }
+.fd-allf-row td { white-space: normal; border-bottom: 1px solid #3e3e42; }
 .fd-allf div { margin: 3px 0; }
 .fd-allf b { display: inline-block; width: 48px; color: var(--text-dim); font-weight: 500; }
 .fd-fchip { display: inline-block; padding: 0 5px; margin: 1px 2px; background: #2d2d30; border: 1px solid #3e3e42; }
