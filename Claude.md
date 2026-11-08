@@ -24,13 +24,33 @@ gcode-compare/
 ├── js/
 │   ├── diff-engine.js  — parser, toolpath segmentation, LCS, token classification
 │   ├── editor.js       — single-layer line-div editor, rendering, decorations
-│   └── app.js          — UI wiring, settings, state, diff coordination
+│   ├── app.js          — UI wiring, settings, state, diff coordination
+│   └── info.js         — in-app Info popup: what is / isn't checked
 ├── tests/
 │   └── engine.test.js  — diff engine tests (run: node tests/engine.test.js)
 └── CLAUDE.md
 ```
 
 No build step. CDN imports only. Opens directly from disk.
+
+## Info Popup — Keep It Current (Required)
+
+js/info.js holds the in-app "What is checked" popup (ⓘ button in the header).
+It is what a new user relies on to know what the tool does and does not check.
+
+**Every change that adds or changes a check, severity, filter, setting,
+default, or limit must update js/info.js in the same commit.**
+
+Sections (keep related items grouped in the right one):
+- Quick start
+- How it works — the passes (1 Read, 2 Split toolpaths, 3 Match toolpaths,
+  4 Line up lines, 5 Compare, 6 Tolerance, F Your filters)
+- Always checked — grouped: Motion and position / Tool and spindle /
+  Work offsets / Program flow / Added-removed lines
+- Filters you control — Comparison rules table, Tolerance table, Show/hide
+- Colours
+- Not checked / limits — anything a user must NOT rely on
+- Navigation
 
 ## Testing
 
