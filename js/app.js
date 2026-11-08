@@ -16,7 +16,8 @@ const App = (() => {
     decimalPointMatters: false, // ON: X1 (no decimal) is not the same as X1.
     minorThreshold: 0.001,
     majorThreshold: 0.01,
-    syncScroll: true
+    syncScroll: true,
+    showVarValues: true // show worked-out #variable values after macro lines
   };
 
   let currentDiff = [];
@@ -169,6 +170,7 @@ N120 M30`;
     document.getElementById('minor-threshold-value').textContent = settings.minorThreshold;
     document.getElementById('major-threshold-value').textContent = settings.majorThreshold;
     document.getElementById('opt-sync-scroll').checked = settings.syncScroll;
+    document.getElementById('opt-show-var-values').checked = settings.showVarValues;
   }
 
   // === Button bindings ===
@@ -229,7 +231,8 @@ N120 M30`;
       'opt-ignore-line-numbers': 'ignoreLineNumbers',
       'opt-ignore-block-delete': 'ignoreBlockDelete',
       'opt-decimal-point-matters': 'decimalPointMatters',
-      'opt-sync-scroll': 'syncScroll'
+      'opt-sync-scroll': 'syncScroll',
+      'opt-show-var-values': 'showVarValues'
     };
 
     for (const [id, key] of Object.entries(checkboxMap)) {
@@ -238,6 +241,8 @@ N120 M30`;
         saveSettings();
         if (key === 'syncScroll') {
           Editor.setSyncScroll(e.target.checked);
+        } else if (key === 'showVarValues') {
+          applyAnnotations();
         } else {
           runDiff();
         }
@@ -414,7 +419,9 @@ N120 M30`;
 
     if (!leftText && !rightText) {
       currentDiff = [];
+      lastDiffResult = null;
       clearDecorations();
+      applyAnnotations();
       updateStatusBar({ workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
       return;
     }
@@ -443,6 +450,62 @@ N120 M30`;
 
     // Apply decorations and update UI
     applyDecorations();
+    applyAnnotations();
+  }
+
+  // === Variable values shown after macro lines ===
+  function fmtValue(v) {
+    if (v === null) return 'empty';
+    if (typeof v !== 'number') return '?';
+    return String(+v.toFixed(4));
+  }
+
+  /** "→ X1.5 Y?" after a line that uses #variables; "= 4" after an assignment. */
+  function lineNote(p) {
+    if (p.macroSkipped) return '  \u21b7 skipped by GOTO';
+    if (p.resolved) {
+      const parts = Object.keys(p.resolved).map(L => L + fmtValue(p.resolved[L]));
+      if (parts.length) return '  \u2192 ' + parts.join(' ');
+    }
+    if (p.assigned) {
+      // Plain "#101=1.5" needs no note; "#102=#101*2" does
+      const rhs = p.raw.replace(/\([^)]*\)?/g, '').replace(/;.*$/, '').split('=').slice(1).join('=').trim();
+      if (/^[+-]?(\d+\.?\d*|\.\d+)$/.test(rhs) && p.assigned.index !== undefined) return '';
+      const target = p.assigned.index !== undefined ? '#' + p.assigned.index : '#?';
+      return '  \u2192 ' + target + ' = ' + fmtValue(p.assigned.value);
+    }
+    return '';
+  }
+
+  function annotationsFor(parsed) {
+    const out = {};
+    if (!parsed) return out;
+    for (let i = 0; i < parsed.length; i++) {
+      const p = parsed[i];
+      if (!p.resolved && !p.assigned && !p.macroSkipped) continue;
+      const note = lineNote(p);
+      if (note) out[i] = note;
+    }
+    return out;
+  }
+
+  function applyAnnotations() {
+    const on = settings.showVarValues && lastDiffResult;
+    Editor.setAnnotations('left', on ? annotationsFor(lastDiffResult.leftParsed) : {});
+    Editor.setAnnotations('right', on ? annotationsFor(lastDiffResult.rightParsed) : {});
+  }
+
+  /** 'in' / 'mm' from the first G20 / G21 in a file, or '' if none. */
+  function unitsOf(parsed) {
+    if (!parsed) return '';
+    for (const p of parsed) {
+      for (const g of p.gCodes) {
+        const n = parseFloat(g.substring(1));
+        if (n === 20) return 'in';
+        if (n === 21) return 'mm';
+      }
+    }
+    return '';
   }
 
   /**
@@ -701,6 +764,20 @@ N120 M30`;
     if (tpLeftEl) tpLeftEl.textContent = leftTpCount;
     if (tpRightEl) tpRightEl.textContent = rightTpCount;
 
+    // Units (G20 inch / G21 mm) per file
+    const uEl = document.getElementById('stat-units');
+    if (uEl) {
+      const uL = leftLines ? unitsOf(lastDiffResult && lastDiffResult.leftParsed) : '';
+      const uR = rightLines ? unitsOf(lastDiffResult && lastDiffResult.rightParsed) : '';
+      const differ = uL && uR && uL !== uR;
+      uEl.textContent = (uL || uR) ? (uL || 'not set') + ' / ' + (uR || 'not set') :
+        (leftLines || rightLines) ? 'not in file' : '–';
+      uEl.classList.toggle('status-units-differ', !!differ);
+      uEl.title = differ ? 'Units differ: one file is inch (G20), the other metric (G21)'
+        : (uL || uR) ? 'Units from G20 (inch) / G21 (mm): left / right'
+        : 'No G20 / G21 in the files: the machine uses its own default units';
+    }
+
     // Line count warning
     const center = document.getElementById('status-center');
     if (leftLines > 0 && rightLines > 0) {
@@ -742,7 +819,9 @@ N120 M30`;
     disabledToolpathIds.clear();
     toleranceOffIds.clear();
     Editor.setTolAllActive(true);
+    lastDiffResult = null;
     clearDecorations();
+    applyAnnotations();
     updateStatusBar({ workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
   }
 

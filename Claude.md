@@ -22,12 +22,14 @@ gcode-compare/
 ├── css/
 │   └── style.css       — all styles (dark theme, deco colors, separator UI)
 ├── js/
+│   ├── macro-eval.js   — #variable resolver (works out X#101, X[#1*2]); loaded before diff-engine
 │   ├── diff-engine.js  — parser, toolpath segmentation, LCS, token classification
-│   ├── editor.js       — single-layer line-div editor, rendering, decorations
+│   ├── editor.js       — single-layer line-div editor, rendering, decorations, hover hook
 │   ├── app.js          — UI wiring, settings, state, diff coordination
 │   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
 │   ├── tools.js        — Tool Table: tool list / gauge / usage / fixture compare + popup
-│   └── info.js         — in-app Info popup: what is / isn't checked
+│   ├── info.js         — in-app Info popup: what is / isn't checked
+│   └── hover-help.js   — hover tooltips: meaning of G/M/words/#vars + Zappettini wiki links
 ├── posts/              — shop Fusion post processors (reference only, not loaded)
 │   ├── Brother Speedio M multi-tasking - APW_v8_9_1.cps
 │   └── Brother Speedio R - APW_R_v2.cps
@@ -57,6 +59,8 @@ Sections (keep related items grouped in the right one):
 - Tool Table — columns, warnings, red/dim rule (keep in sync with tools.js)
 - Filters you control — Comparison rules table, Tolerance table, Show/hide
 - Colours
+- Variable values (what MacroEval works out / leaves unknown)
+- Hover help
 - Not checked / limits — anything a user must NOT rely on
 - Navigation
 
@@ -288,11 +292,55 @@ Not used by the UI — app.js counts only what is actually displayed.
 disabled-toolpath ops
 
 **Status bar**: Toolpaths L/R, Work offset count, Critical count, Minor count, Lines L/R,
-line-count mismatch warning (>10% difference), cursor position
+line-count mismatch warning (>10% difference); right side: control, units, privacy note, cursor pane + position
 
 **Other**: New (clear both), Swap panes, Load Example (built-in test G-code)
 
 ---
+
+### Macro variables (`macro-eval.js`)
+
+- `MacroEval.resolveFile(parsed)` runs inside computeSemanticDiff on both files.
+- Walks the file once. Values: number, null (vacant, #0), undefined (unknown).
+- Reads per line (comments removed): `#n=expr`, `#[expr]=expr`, `IF[..]THEN`,
+  `IF[..]GOTO n`, `GOTO n`, `WHILE[..]DOn` / `ENDn`, and G-code words with
+  expressions. Maths: + - * / MOD AND OR XOR, brackets, SIN COS TAN ASIN ACOS
+  ATAN (ATAN[a]/[b]) SQRT ABS ROUND FIX FUP LN EXP POW (degrees). EQ/NE tell
+  vacant from 0. Float noise trimmed to 1e-9.
+- Never runs loops. Unknown (honest) cases:
+  - vars changed inside WHILE..END or a backward GOTO range: unknown from the
+    loop start and after the loop end
+  - forward GOTO with unknown condition: vars changed in the jumped-over lines
+    become unknown at the label. Known-true: lines skipped (p.macroSkipped)
+  - block delete `/` assignment: unknown if the value would change
+  - G65 / G66 / M06: commons (#34+) unknown. M98 and unreadable macro lines: all unknown
+  - indirect write with unknown index: all unknown. O-number line: new program, all unknown
+  - unset vars are unknown, not vacant (machine may hold a value)
+- Adds to parsed lines: `resolved` {letter: value}, `varRefs` {n: value before
+  the line}, `assigned` {index, value}, `macroSkipped`.
+- classifyTokens: letters with an expression on either side are compared once,
+  in the expression section (skipped in axis / arc / F / S / T / H / D / param
+  checks). Same text + different known value -> critical (exprValue-X).
+  Different text + same known value -> minor (exprSame-X). Otherwise critical.
+- app.js shows the values as a grey note after the line (`→ X1.5 Y?`,
+  `→ #102 = 4`, `↷ skipped by GOTO`). Setting "Show variable values" (ON).
+
+### Hover help (`hover-help.js`)
+
+- Editor reports mouse line + column (`Editor.setHoverCallback`). HoverHelp
+  finds the token (DiffEngine.parseGCodeLine) and shows a tooltip after 350 ms.
+- Tables: G, M, word letters, macro keywords, #variable ranges (Brother first,
+  Fanuc fallback). Brother #5221+ / #7001+ work offsets, #11000+n tool length,
+  #13000+n diameter (from the shop post notes), #3700 tool in spindle.
+- Values come from the last compare (App.getDiffContext), only when the line text still matches.
+- Each tip links to a page on https://zappettiniconsulting.com/wiki/ (the author
+  is a contact of the shop; keep the links pointing at real pages).
+
+### Status bar (right side)
+
+- Control (Brother), Units per file from first G20/G21 (red when they differ,
+  "not in file" when neither file has one), "Files stay on this computer",
+  pane + Ln/Col of the cursor.
 
 ### Feeds & Speeds (`feeds.js`)
 
@@ -323,6 +371,22 @@ line-count mismatch warning (>10% difference), cursor position
 - Warnings: not in header list, listed never used, H/D on G100 line != T.
 - Red only when both sides have a value and it differs (numbers compared as numbers).
   One-sided value = dim. Fixture: same rule.
+
+## Future Ideas (to-do)
+
+Ideas from reviewing the Zappettini Macro Playground and wiki (Nov 2026).
+
+1. **Overlay backplot** — draw left and right toolpaths in 3D on top of each
+   other, differences in red. Rapids dashed, feeds solid. Dan has more ideas
+   for this — ask before designing it.
+2. **Variables, step 3 (hard)** — run loops (WHILE, backward GOTO), follow
+   G65 / M98 into subprograms, pass G65 arguments. Ask Zappettini about his
+   macro engine first.
+3. **Compare assignment lines by value** — `#1=2*3` vs `#1=6` is still a text change.
+4. **Welcome card** — short numbered "how to use" card on first open.
+5. **Light theme** — toggle for bright shop-floor screens.
+6. **Subprogram compare** — when a program calls `M98 P____`, open and compare
+   that subprogram file too.
 
 ## What Is NOT Built Yet
 
@@ -377,7 +441,9 @@ This list will grow — add new rules to classifyTokens only.
 | Comment content | critical | Comment text difference (after ignore rules), by role — see Comment roles |
 | Commented-out code | critical | (G0 Z1.) vs live G0 Z1.: paired (sameKind), field commentedOut + inner code diffs |
 | Macros | critical | Any # token or macro statement (IF/GOTO/...) difference; numbers compared as numbers (5. = 5.0) |
-| Expression words | critical | X[#101+1] / X#101 text difference |
+| Expression words | critical | X[#101+1] / X#101 text difference (unless the worked-out values match) |
+| Expression value | critical | Same expression text, different worked-out value (exprValue-X) |
+| Expression same value | minor | Different text, same known value: X#101 vs X1.5 with #101 = 1.5 (exprSame-X) |
 | Params / other words | critical | R/P/Q/L or unrecognized letter difference |
 | Arc R | coordinate (tolerance) | R value change when both lines are G2/G3 (canned cycle R stays critical) |
 | Block delete | critical | / on one side only (unless Ignore block delete) |

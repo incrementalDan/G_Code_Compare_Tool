@@ -759,6 +759,41 @@ html, body {
   gap: 12px;
 }
 
+.status-units-differ { color: #ff5252; font-weight: 700; }
+.status-private { color: #7cb87c; }
+
+/* ===== Variable values after macro lines (e.g. "→ X1.5") ===== */
+.var-ghost {
+  color: #8a8a8a;
+  font-style: italic;
+  opacity: 0.85;
+  pointer-events: none;
+  white-space: pre;
+}
+
+/* ===== Hover help tooltip ===== */
+#hover-tip {
+  position: fixed;
+  z-index: 3000;
+  max-width: 340px;
+  padding: 8px 10px;
+  background: #2d2d30;
+  border: 1px solid #555;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  display: none;
+}
+#hover-tip.visible { display: block; }
+#hover-tip .ht-title { font-family: var(--font-mono); font-weight: 700; color: #9cdcfe; margin-bottom: 2px; }
+#hover-tip .ht-meaning { margin-bottom: 4px; }
+#hover-tip .ht-row { font-family: var(--font-mono); font-size: 11px; color: #ddd; }
+#hover-tip .ht-key { color: var(--text-dim); font-family: inherit; }
+#hover-tip .ht-link { display: inline-block; margin-top: 6px; color: #4fc1ff; text-decoration: none; font-size: 11px; }
+#hover-tip .ht-link:hover { text-decoration: underline; }
+
 /* ===== Token-level diff highlighting ===== */
 .token-diff {
   background: rgba(255, 200, 0, 0.35);

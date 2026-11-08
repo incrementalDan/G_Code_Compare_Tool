@@ -76,6 +76,7 @@ const Editor = (() => {
       decorations: {},
       disabledLines: new Set(),
       filename: 'untitled',
+      annotations: {},      // line index -> short text shown after the line (variable values)
       alignmentPadding: {},
       toolpathSeparators: {},
       separatorPositions: [], // [{id, label, disabled, offsetTop}]
@@ -102,8 +103,24 @@ const Editor = (() => {
       textarea.focus({ preventScroll: true });
       textarea.selectionStart = textarea.selectionEnd = Math.min(pos, textarea.value.length);
       setCursorLine(state, line);
-      updateCursorPos(textarea);
+      updateCursorPos(textarea, side);
     });
+
+    // Hover: report the line and character under the mouse (hover-help.js)
+    display.addEventListener('mousemove', (e) => {
+      if (!hoverCallback) return;
+      const rect = display.getBoundingClientRect();
+      const row = Math.floor((e.clientY - rect.top) / LINE_HEIGHT);
+      const r = state.rows[row];
+      if (!r || r.kind !== 'line' || e.target.closest('.tp-separator')) { hoverCallback(null); return; }
+      const content = state.windowEl.querySelector('.line-content');
+      if (!content) return;
+      const left = content.getBoundingClientRect().left + parseFloat(getComputedStyle(content).paddingLeft || 0);
+      const col = Math.floor((e.clientX - left) / charWidth(state));
+      hoverCallback({ side, line: r.line, col, text: state.lines[r.line] || '', x: e.clientX, y: e.clientY,
+        rowTop: rect.top + row * LINE_HEIGHT });
+    });
+    display.addEventListener('mouseleave', () => { if (hoverCallback) hoverCallback(null); });
 
     // Event delegation for separator rows (bound once)
     display.addEventListener('click', (e) => {
@@ -174,7 +191,7 @@ const Editor = (() => {
     let cursorTimer = null;
     const debouncedCursor = () => {
       clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(() => { updateCursorPos(textarea); followCursor(state); }, 50);
+      cursorTimer = setTimeout(() => { updateCursorPos(textarea, side); followCursor(state); }, 50);
     };
     textarea.addEventListener('keyup', debouncedCursor);
 
@@ -199,11 +216,12 @@ const Editor = (() => {
   // Cursor helpers
   // =====================================================
 
-  function updateCursorPos(textarea) {
+  function updateCursorPos(textarea, side) {
     const val = textarea.value.substring(0, textarea.selectionStart);
     const lines = val.split('\n');
     const el = document.getElementById('stat-cursor');
-    if (el) el.textContent = `Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
+    const pane = side === 'right' ? 'Right' : side === 'left' ? 'Left' : '';
+    if (el) el.textContent = `${pane ? pane + ' \u00b7 ' : ''}Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
   }
 
   /** The text line shown at a display row (padding/separator rows map to the next line). */
@@ -440,8 +458,11 @@ const Editor = (() => {
     const bgClass = type ? ` diff-bg-${type}` : '';
     const disabledClass = isDisabled ? ' line-disabled' : '';
     const cursorClass = i === state.cursorLine ? ' cursor-line' : '';
-    const highlighted = syntaxHighlightLine(state.lines[i], tokenDiffs, state.side);
-    return `<div class="editor-line${bgClass}${disabledClass}${cursorClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
+    // A trailing \r (Windows line end) would break the row before the value note
+    const highlighted = syntaxHighlightLine(state.lines[i].replace(/\r$/, ''), tokenDiffs, state.side);
+    const note = state.annotations[i];
+    const ghost = note ? `<span class="var-ghost">${escapeHtml(note)}</span>` : '';
+    return `<div class="editor-line${bgClass}${disabledClass}${cursorClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || (ghost ? '' : '&nbsp;')}${ghost}</span></div>`;
   }
 
   /** Character ranges of changed tokens for one side. */
@@ -603,6 +624,17 @@ const Editor = (() => {
     render(state);
   }
 
+  /** Short notes shown after lines, e.g. "→ X1.5" (resolved variable values). */
+  function setAnnotations(side, annotations) {
+    const state = stateFor(side);
+    if (!state) return;
+    state.annotations = annotations || {};
+    renderWindow(state, true);
+  }
+
+  let hoverCallback = null;
+  function setHoverCallback(fn) { hoverCallback = fn; }
+
   function setSeparatorCallbacks(side, callbacks) {
     const state = stateFor(side);
     if (!state) return;
@@ -656,7 +688,7 @@ const Editor = (() => {
 
   return {
     init, getValue, setValue, setFilename, getFilename,
-    setDecorations, scrollToLine, setSyncScroll,
+    setDecorations, setAnnotations, setHoverCallback, scrollToLine, setSyncScroll,
     setSeparatorCallbacks, setDropdownState, setTolAllActive,
     getDisplayRow, getTotalRows, getLineCount, loadFileInto,
     syntaxHighlightLine
