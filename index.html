@@ -19,13 +19,18 @@
       <button class="btn" id="btn-swap">Swap Panes</button>
       <button class="btn" id="btn-save-left">Save Left</button>
       <button class="btn" id="btn-save-right">Save Right</button>
+      <button class="btn" id="btn-feeds" title="Compare spindle speeds and feeds per toolpath">Feeds &amp; Speeds</button>
       <button class="btn btn-accent" id="btn-example">Load Example</button>
     </div>
-    <button id="settings-toggle" title="Settings" aria-label="Settings">&#9881;</button>
+    <div class="header-icons">
+      <button id="info-toggle" title="What is checked — how this tool works" aria-label="Info">&#9432;</button>
+      <button id="settings-toggle" title="Settings" aria-label="Settings">&#9881;</button>
+    </div>
   </div>
 
   <!-- Color legend strip -->
   <div id="color-legend">
+    <span class="legend-item"><span class="legend-swatch legend-workoffset"></span>Work Offset</span>
     <span class="legend-item"><span class="legend-swatch legend-critical"></span>Critical</span>
     <span class="legend-item"><span class="legend-swatch legend-minor"></span>Minor</span>
     <span class="legend-item"><span class="legend-swatch legend-tolerance"></span>Within Tol.</span>
@@ -99,7 +104,7 @@
 
     <div class="settings-section">
       <h3>Coordinate Tolerances</h3>
-      <p class="setting-description">Coordinate changes within the minor threshold are hidden. Changes between minor and major are shown as amber (minor). Changes beyond major are shown as red (critical).</p>
+      <p class="setting-description">Coordinate changes within the minor threshold are dimmed and not counted (untick a toolpath's TOL box to see them as minor). Changes between minor and major are shown as amber (minor). Changes beyond major are shown as red (critical).</p>
       <div class="setting-row">
         <label>Minor threshold</label>
         <div class="stepper">
@@ -131,6 +136,7 @@
   <div id="status-bar">
     <div id="status-left">
       <span>Toolpaths: <span id="stat-toolpaths-left">0</span> / <span id="stat-toolpaths-right">0</span></span>
+      <span>Work offset: <span class="status-workoffset" id="stat-workoffset">0</span></span>
       <span>Critical: <span class="status-major" id="stat-major">0</span></span>
       <span>Minor: <span class="status-minor-count" id="stat-minor-count">0</span></span>
       <span>Lines: <span id="stat-lines-left">0</span> / <span id="stat-lines-right">0</span></span>
@@ -151,5 +157,7 @@
   <script src="js/diff-engine.js"></script>
   <script src="js/editor.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/feeds.js"></script>
+  <script src="js/info.js"></script>
 </body>
 </html>
