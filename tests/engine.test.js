@@ -5,8 +5,10 @@ const vm = require('vm');
 
 const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'diff-engine.js'), 'utf8');
 const ctx = {};
-vm.runInNewContext(src + '\nthis.DiffEngine = DiffEngine;', ctx);
+const feedsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'feeds.js'), 'utf8');
+vm.runInNewContext(src + '\n' + feedsSrc + '\nthis.DiffEngine = DiffEngine; this.Feeds = Feeds;', ctx);
 const DE = ctx.DiffEngine;
+const FD = ctx.Feeds;
 
 const DEFAULT_RULES = {
   ignoreParenComments: false, ignoreSemiComments: true, ignoreWhitespace: true,
@@ -103,7 +105,7 @@ const D = { name: 'CHAMFER', op: 'CHAMFER1', t: 4 };
 test('extra toolpath on right stays in order', () => {
   const r = diff(program([A, B, D]), program([A, B, C, D]));
   const order = r.tpMatches.map(m => (m.left ? m.left.name : '-') + '/' + (m.right ? m.right.name : '-')).join(' ');
-  eq(order, 'FACE/FACE DRILL/DRILL -/POCKET CHAMFER/CHAMFER Program End/Program End');
+  eq(order, 'FACE1/FACE1 DRILL1/DRILL1 -/POCKET1 CHAMFER1/CHAMFER1 Program End/Program End');
 });
 test('separator anchors on the comment line', () => {
   const lines = program([A]);
@@ -160,6 +162,82 @@ test('70,000-line re-post with tiny changes everywhere: all within tolerance', (
   const R = L.map(l => l.replace(/^X(\d+\.\d{3})\d/, (m, a) => 'X' + a + '7'));
   const ops = diff(L, R).ops;
   eq(ops.filter(o => o.type !== 'equal' && o.type !== 'tolerance').length, 0);
+});
+
+console.log('Toolpath layouts (real files)');
+function loadFile(name) {
+  const L = fs.readFileSync(path.join(__dirname, '..', 'Examples', name), 'utf8').split(/\r?\n/);
+  const P = L.map(DE.parseGCodeLine);
+  return { L, P, T: DE.segmentIntoToolpaths(L, P) };
+}
+const o1268 = loadFile('O1268.NC');
+const o1158 = loadFile('O1158.NC.txt');
+const tpOnly = f => f.T.filter(t => t.type === 'toolpath');
+test('new layout: 13 toolpaths in O1268', () => eq(tpOnly(o1268).length, 13));
+test('new layout: names, strategies, tools', () => {
+  const t = tpOnly(o1268);
+  eq(t[0].name + '|' + t[0].opType + '|T' + t[0].toolNumber, '3D ADAPTIVE ROUGHING1 2|ADAPTIVE|T62');
+  eq(t[2].name + '|T' + t[2].toolNumber, '2D CONTOUR5|T76'); // same tool, no G100
+  eq(t[7].name + '|' + t[7].opType, 'DRILL3|DRILL');
+});
+test('new layout: header tool list / tool-setting dividers skipped', () => eq(o1268.T[0].type + ':' + o1268.T[1].startLine, 'preamble:136'));
+test('new layout: program end found', () => eq(o1268.T[o1268.T.length - 1].type, 'program_end'));
+test('old layout: 6 toolpaths in O1158, op name from 2nd comment', () => {
+  const t = tpOnly(o1158);
+  eq(t.length, 6);
+  eq(t[0].name + '|T' + t[0].toolNumber, 'ROUGH OFF TOP|T51');
+});
+test('old-layout file matches new-layout file by op name + tool', () => {
+  const oldL = ['%', 'O1', 'G90 G54', '', '(JOB - TOOL)', '(FACE)', 'G100 T1 X0. Y0. S1000 M3', 'G1 Z0. F10.', 'G1 X1.', 'M30'];
+  const newL = ['%', 'O1', 'G90 G54', '', '(--------------------)', '(JOB - TOOL)', '(FACE)', '(FACE)',
+    'G100 T1 X0. Y0. S1000 M3', 'G1 Z0. F10.', 'G1 X1.', 'M30'];
+  const r = diff(oldL, newL);
+  eq(r.tpMatches.filter(m => m.left && m.right && m.left.type === 'toolpath').length, 1);
+});
+test('G54.1 P2 vs P3 is a work offset change', () => eq(types(['G54.1 P2'], ['G54.1 P3']), 'workoffset'));
+
+console.log('Feeds & Speeds');
+const feeds1268 = FD.analyzeFile(o1268.P, o1268.T);
+const top = (tp, key) => {
+  const m = feeds1268.get(tp.id)[key];
+  return [...m.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]).join('/');
+};
+const t1268 = tpOnly(o1268);
+test('RPM from G100', () => eq(top(t1268[1], 'rpm'), '7600'));
+test('RPM inherited by same-tool toolpath', () => eq(top(t1268[2], 'rpm'), '7600'));
+test('contour: plunge 40, lead-in 12, cut 8.4', () =>
+  eq([top(t1268[2], 'plunge'), top(t1268[2], 'leadIn'), top(t1268[2], 'cut')].join(' '), '40 12 8.4'));
+test('flat: ramp 12', () => eq(top(t1268[1], 'ramp'), '12'));
+test('drill: cycle feed 11.1', () => eq(top(t1268[7], 'cycle'), '11.1'));
+test('G41 lead-in / G40 lead-out', () => eq(top(t1268[11], 'leadIn') + ' ' + top(t1268[11], 'cut'), '15.5 10.9'));
+function feedsOf(lines) {
+  const P = lines.map(DE.parseGCodeLine), T = DE.segmentIntoToolpaths(lines, P);
+  const tp = T.find(t => t.type === 'toolpath');
+  const r = FD.analyzeFile(P, T).get(tp.id);
+  const out = {};
+  for (const k of Object.keys(r)) out[k] = [...r[k].keys()].join('/');
+  return out;
+}
+const base = ['%', '', '(----------)', '(J)', '(OP)', '(POCKET)', 'G100 T1 X0. Y0. Z1. S10000 M3'];
+test('ramp RPM from lone S line', () => {
+  const f = feedsOf(base.concat(['S8000', 'G1 Z-.1 F20.', 'G1 X1. F50.', 'S10000', 'G0 Z1.', 'M30']));
+  eq(f.rpm + ' ' + f.rampRpm, '10000 8000');
+});
+test('helical ramp then cut', () => {
+  const f = feedsOf(base.concat(['G0 Z.1', 'G3 X.1 Y0. Z-.05 I.05 F15.', 'G1 X2. F60.', 'G1 Y1.', 'G0 Z1.', 'M30']));
+  eq(f.ramp + ' ' + f.cut, '15 60');
+});
+test('high feed link and retract', () => {
+  const f = feedsOf(base.concat(['G0 Z.1', 'G1 Z-.1 F20.', 'G1 X2. F60.', 'G1 X3. Y3. F200.', 'G1 X4. F60.', 'G1 Z.5 F100.', 'G0 Z1.', 'M30']));
+  eq(f.plunge + ' ' + f.cut + ' ' + f.highFeed + ' ' + f.retract, '20 60 200 100');
+});
+test('feed comparison flags a changed cut feed', () => {
+  const L = base.concat(['G0 Z.1', 'G1 Z-.1 F20.', 'G1 X2. F60.', 'G0 Z1.', 'M30']);
+  const R = L.map(l => l.replace('F60.', 'F65.'));
+  const r = diff(L, R);
+  const rows = FD.compare({ leftParsed: r.leftParsed, rightParsed: r.rightParsed,
+    leftToolpaths: r.leftToolpaths, rightToolpaths: r.rightToolpaths, tpMatches: r.tpMatches });
+  eq(rows[0].cells.cut.changed + ' ' + rows[0].cells.plunge.changed, 'true false');
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

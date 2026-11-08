@@ -388,6 +388,10 @@ const DiffEngine = (() => {
       }
     }
 
+    // --- New layout (APW posts v8.8.1+ / R v2.1+): divider comment starts each toolpath ---
+    const byDivider = segmentByDividers(lines, parsedLines, g100Anchors);
+    if (byDivider) return finishToolpaths(byDivider, lines, parsedLines);
+
     // --- No comment-pair anchors found — fall back ---
     if (commentAnchors.length === 0) {
       // If we have G100 anchors but no comment-pairs, use G100-only detection
@@ -482,8 +486,10 @@ const DiffEngine = (() => {
       }
 
       // Extract metadata
-      const name = ca.comments[0] || '';
-      const opType = ca.comments.length > 1 ? ca.comments[1] : '';
+      // Old layout: (job - tool description) (operation name) [more comments]
+      const jobTool = ca.comments.length > 1 ? ca.comments[0] : '';
+      const name = ca.comments.length > 1 ? ca.comments[1] : (ca.comments[0] || '');
+      const opType = ca.comments.length > 2 ? ca.comments[2] : '';
       const toolNumber = g100 ? g100.toolNumber : prevToolNumber;
       const nNumber = g100 ? g100.nNumber : null;
       const spindleSpeed = g100 ? g100.spindleSpeed : null;
@@ -498,6 +504,8 @@ const DiffEngine = (() => {
         type: 'toolpath',
         name,
         opType,
+        jobTool,
+        layout: 'blank-comments',
         toolNumber,
         nNumber,
         spindleSpeed,
@@ -508,6 +516,107 @@ const DiffEngine = (() => {
       });
     }
 
+    return finishToolpaths(toolpaths, lines, parsedLines);
+  }
+
+  function isDivider(p) {
+    return p.isCommentOnly && /^-{10,}$/.test((p.comment || '').trim());
+  }
+
+  function isMotionLine(p) {
+    const hasAxes = Object.keys(p.axes).length + Object.keys(p.rotary).length > 0;
+    return p.gCodes.some(g => codeNum(g) === 100) ||
+      (hasAxes && p.gCodes.some(g => { const n = codeNum(g); return n >= 0 && n <= 3; }));
+  }
+
+  /** Only labels, macro statements, or comments (e.g. the tool length check block). */
+  function isLabelOrMacroOnly(p) {
+    return p.gCodes.length === 0 && p.mCodes.length === 0 &&
+      Object.keys(p.axes).length === 0 && p.tool === null && p.spindle === null;
+  }
+
+  /**
+   * New layout: every toolpath starts with a divider comment (-----).
+   *   (----------)
+   *   [tool length check: IF/GOTO lines]
+   *   (job - tool description)   <- optional
+   *   (operation name)
+   *   (strategy, e.g. ADAPTIVE)
+   *   G54 / M01 / G100 ...       <- or straight to moves for a same-tool toolpath
+   * Dividers in the header tool list and the tool-setting block are skipped:
+   * they have an M06 or no motion before the next divider.
+   * Returns null when the file does not use this layout.
+   */
+  function segmentByDividers(lines, parsedLines, g100Anchors) {
+    const dividers = [];
+    for (let i = 0; i < parsedLines.length; i++) if (isDivider(parsedLines[i])) dividers.push(i);
+    if (dividers.length === 0) return null;
+
+    const valid = [];
+    for (let k = 0; k < dividers.length; k++) {
+      const d = dividers[k];
+      const stop = k + 1 < dividers.length ? dividers[k + 1] : parsedLines.length;
+      let hasM06 = false, hasMotion = false;
+      for (let i = d + 1; i < stop; i++) {
+        const p = parsedLines[i];
+        if (p.mCodes.some(m => codeNum(m) === 6)) { hasM06 = true; break; }
+        if (isMotionLine(p)) hasMotion = true;
+      }
+      if (!hasM06 && hasMotion) valid.push(d);
+    }
+    if (valid.length === 0) return null;
+
+    const toolpaths = [];
+    let prevToolNumber = null;
+    for (let k = 0; k < valid.length; k++) {
+      const d = valid[k];
+      const next = k + 1 < valid.length ? valid[k + 1] : parsedLines.length;
+
+      // First real code line after the divider (skips the length check block)
+      let r = -1;
+      for (let i = d + 1; i < next; i++) {
+        const p = parsedLines[i];
+        if (p.isBlank || p.isCommentOnly || isLabelOrMacroOnly(p)) continue;
+        r = i; break;
+      }
+      // Comment group directly above it
+      const group = [];
+      for (let i = (r >= 0 ? r : next) - 1; i > d; i--) {
+        const p = parsedLines[i];
+        if (!p.isCommentOnly || isDivider(p)) break;
+        group.unshift(p.comment || '');
+      }
+      const strategy = group.length >= 2 ? group[group.length - 1] : '';
+      const name = group.length >= 2 ? group[group.length - 2] : (group[0] || '');
+      const jobTool = group.length >= 3 ? group[group.length - 3] : '';
+
+      const g100 = g100Anchors.find(g => g.lineIndex > d && g.lineIndex < next) || null;
+      const toolNumber = g100 ? g100.toolNumber : prevToolNumber;
+      prevToolNumber = toolNumber;
+
+      toolpaths.push({
+        id: toolpaths.length,
+        type: 'toolpath',
+        name,
+        opType: strategy,
+        jobTool,
+        layout: 'divider',
+        toolNumber,
+        nNumber: g100 ? g100.nNumber : null,
+        spindleSpeed: g100 ? g100.spindleSpeed : null,
+        startLine: d,
+        anchorLine: d,
+        g100Line: g100 ? g100.lineIndex : -1,
+        endLine: lines.length - 1
+      });
+    }
+    return toolpaths;
+  }
+
+  /**
+   * Shared last step: set end lines, add Program Header and Program End.
+   */
+  function finishToolpaths(toolpaths, lines, parsedLines) {
     // Adjust endLines
     for (let i = 0; i < toolpaths.length - 1; i++) {
       toolpaths[i].endLine = toolpaths[i + 1].startLine - 1;
@@ -868,6 +977,9 @@ const DiffEngine = (() => {
         rightTokens: parsedB.tokens.filter(t => t.type === 'macro') });
     }
 
+    // G54.1 Pn: the P word picks the work offset
+    const extWO = parsedA.gCodes.some(g => codeNum(g) === 54.1) || parsedB.gCodes.some(g => codeNum(g) === 54.1);
+
     // --- Params (R, P, Q, L) and unrecognized words (U, V, W, E ...) ---
     for (const ttype of ['param', 'other']) {
       const tA = parsedA.tokens.filter(t => t.type === ttype);
@@ -879,7 +991,8 @@ const DiffEngine = (() => {
       for (const k of keys) {
         const va = mapA[k], vb = mapB[k];
         if (va === undefined || vb === undefined || Math.abs(va - vb) > FP_EPS) {
-          tokenDiffs.push({ field: ttype + '-' + k, severity: 'critical',
+          const wo = extWO && k === 'P';
+          tokenDiffs.push({ field: wo ? 'workOffset' : ttype + '-' + k, severity: wo ? 'workoffset' : 'critical',
             leftVal: va, rightVal: vb,
             leftTokens: tA.filter(t => t.param === k),
             rightTokens: tB.filter(t => t.param === k) });
@@ -891,7 +1004,8 @@ const DiffEngine = (() => {
     const exprKeys = new Set([...Object.keys(parsedA.exprs), ...Object.keys(parsedB.exprs)]);
     for (const k of exprKeys) {
       if (parsedA.exprs[k] !== parsedB.exprs[k]) {
-        tokenDiffs.push({ field: 'expr-' + k, severity: 'critical',
+        const wo = extWO && k === 'P'; // G54.1 P#153 (pallet work offset)
+        tokenDiffs.push({ field: wo ? 'workOffset' : 'expr-' + k, severity: wo ? 'workoffset' : 'critical',
           leftVal: parsedA.exprs[k], rightVal: parsedB.exprs[k],
           leftTokens: parsedA.tokens.filter(t => t.type === 'expr' && t.param === k),
           rightTokens: parsedB.tokens.filter(t => t.type === 'expr' && t.param === k) });
@@ -1191,7 +1305,8 @@ const DiffEngine = (() => {
   function tpKey(tp) {
     if (tp.type === 'preamble') return 'PREAMBLE';
     if (tp.type === 'program_end') return 'PROGRAM_END';
-    return (tp.name || '') + '|' + (tp.opType || '') + '|T' + tp.toolNumber;
+    // Operation name + tool, so old-layout and new-layout files of the same job match
+    return (tp.name || '').toUpperCase() + '|T' + tp.toolNumber;
   }
 
   /**
@@ -1457,7 +1572,7 @@ const DiffEngine = (() => {
       if (op.type === 'critical' || op.type === 'workoffset') op.alwaysShow = true;
     }
 
-    return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches };
+    return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches, leftParsed, rightParsed };
   }
 
   /** Word letters used on a line, e.g. "G1 X1. F10." -> {G, X, F}. */
