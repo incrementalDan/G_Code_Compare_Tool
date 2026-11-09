@@ -352,7 +352,8 @@ html, body {
 /* ===== Main Layout ===== */
 #main {
   display: flex;
-  height: calc(100vh - 44px - 24px - 28px);
+  /* --panel-h: height of the info panel at the bottom (0 when hidden) */
+  height: calc(100vh - 44px - 24px - 28px - var(--panel-h, 0px));
 }
 
 /* ===== Editor Panes ===== */
@@ -757,6 +758,117 @@ html, body {
 #status-right {
   display: flex;
   gap: 12px;
+}
+
+.status-units-differ { color: #ff5252; font-weight: 700; }
+.status-private { color: #7cb87c; }
+
+/* ===== Variable values after macro lines (e.g. "→ X1.5") ===== */
+.var-ghost {
+  color: #8a8a8a;
+  font-style: italic;
+  opacity: 0.85;
+  pointer-events: none;
+  white-space: pre;
+}
+
+/* ===== IF tests (legend strip) and jump back button ===== */
+#test-banner {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #ffcc66;
+  font-family: var(--font-mono);
+}
+#test-banner[hidden] { display: none; }
+#test-banner button, #jump-back {
+  background: #3a3a3d;
+  color: var(--text);
+  border: 1px solid #555;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+#test-banner button:hover, #jump-back:hover { background: #4a4a4f; }
+#jump-back {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2500;
+  padding: 5px 12px;
+  font-size: 12px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.5);
+}
+#jump-back[hidden] { display: none; }
+.editor-line.jump-flash { animation: jumpFlash 1.6s ease-out; }
+@keyframes jumpFlash {
+  0%, 40% { background: rgba(79, 193, 255, 0.35); }
+  100% { background: transparent; }
+}
+
+/* ===== Info panel (bottom) ===== */
+#info-panel {
+  height: var(--panel-h, 0px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  overflow: hidden;
+}
+#info-panel[hidden] { display: none; }
+#info-panel .ip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  flex: 0 0 24px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+#info-panel .ip-title { font-family: var(--font-mono); font-weight: 700; color: #9cdcfe; }
+#info-panel .ip-where { color: var(--text-dim); font-size: 11px; }
+#info-panel .ip-head button {
+  background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 12px; padding: 0 4px;
+}
+#info-panel .ip-head button:hover { color: var(--text); }
+#info-panel .ip-close { margin-left: auto; }
+#info-panel.collapsed .ip-toggle { transform: rotate(-90deg); }
+#info-panel.collapsed .ip-body { display: none; }
+#info-panel .ip-body {
+  flex: 1;
+  display: flex;
+  gap: 20px;
+  padding: 8px 12px;
+  overflow-y: auto;
+  line-height: 1.45;
+}
+#info-panel .ip-left { flex: 1 1 50%; min-width: 0; }
+#info-panel .ip-right { flex: 1 1 50%; min-width: 0; color: var(--text); }
+#info-panel .ip-left:empty { display: none; }
+#info-panel .ht-rows { margin: 0 0 6px; }
+#info-panel .ht-row { font-family: var(--font-mono); font-size: 11px; color: #ddd; }
+#info-panel .ht-key { color: var(--text-dim); }
+#info-panel .ht-meaning { margin-bottom: 4px; }
+#info-panel .ht-explain { color: #bdbdbd; font-size: 11px; margin-bottom: 4px; }
+#info-panel .ht-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+#info-panel .ht-btn {
+  background: #0e639c; color: #fff; border: none; border-radius: 4px;
+  font-size: 11px; padding: 3px 8px; cursor: pointer; font-family: inherit;
+}
+#info-panel .ht-btn:hover { background: #1177bb; }
+#info-panel .ht-btn.ht-true { background: #2e7d32; }
+#info-panel .ht-btn.ht-false { background: #8e3b3b; }
+#info-panel .ht-btn.ht-plain { background: #3a3a3d; border: 1px solid #555; }
+#info-panel .ht-link { display: inline-block; margin-top: 4px; color: #4fc1ff; text-decoration: none; font-size: 11px; }
+#info-panel .ht-link:hover { text-decoration: underline; }
+@media (max-width: 700px) {
+  #info-panel .ip-body { flex-direction: column; gap: 6px; }
 }
 
 /* ===== Token-level diff highlighting ===== */

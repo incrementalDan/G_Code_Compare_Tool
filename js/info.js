@@ -6,7 +6,7 @@
  *
  * Content is plain HTML in INFO_HTML below, grouped as:
  *   Quick start · The passes · Always checked · Filters you control ·
- *   Colours · Not checked / limits · Navigation
+ *   Colours · Variable values · Info panel · Not checked / limits · Navigation
  */
 
 const Info = (() => {
@@ -31,6 +31,7 @@ const Info = (() => {
   <a href="#info-filters">Filters</a>
   <a href="#info-feeds">Feeds &amp; Speeds</a>
   <a href="#info-colors">Colours</a>
+  <a href="#info-vars">Variables</a>
   <a href="#info-limits">Not checked</a>
   <a href="#info-nav">Navigation</a>
 </nav>
@@ -121,6 +122,9 @@ const Info = (() => {
     <tr><td>M-codes (any added, removed, or changed)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Other G-codes (G43, G90/G91, G17, G28…)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Macros: #vars, IF/GOTO/WHILE, X[#101+1] (compared as text; numbers as numbers, <code>5.</code> = <code>5.0</code>)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Variable word, same text but a different worked-out value (<code>X#101</code> both sides, #101 set differently above)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Variable word vs number with the same known value (<code>X#101</code> vs <code>X1.5</code>, #101 = 1.5)</td><td>${AMBER}</td><td></td></tr>
+    <tr><td>Variable word vs number when the value is unknown (machine value, loop, call)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>N label that a GOTO or M99 P jumps to (even with Ignore N-numbers on)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>R/P/Q/L (canned cycle R = retract plane) and any other letter (U, V, W, E…)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Program number O</td><td>${AMBER}</td><td></td></tr>
@@ -238,12 +242,60 @@ const Info = (() => {
   </table>
 </section>
 
+<section id="info-vars" class="info-card">
+  <h3>Variable values <span class="info-where">⚙ Show variable values</span></h3>
+  <p>The tool reads each file top to bottom and works out what each <code>#variable</code> holds.
+  Lines that use one get a grey note at the end, e.g. <code>→ X1.5 Z-0.25</code>. <code>?</code> = unknown.</p>
+  <ul class="info-list">
+    <li><b>Worked out:</b> <code>#101=1.5</code>, maths <code>+ - * /</code>, brackets, <code>SIN COS TAN ATAN SQRT ABS ROUND FIX FUP</code>
+      (angles in degrees), <code>#[100+1]=</code>, <code>IF [..] THEN</code>, and a <code>GOTO</code> whose condition is known.</li>
+    <li><b>Unknown (<code>?</code>):</b> machine values the file never sets (work offsets <code>#5221</code>, tool lengths <code>#11001</code>,
+      positions), anything changed inside a loop (<code>WHILE</code> or a jump back), lines a GOTO may or may not skip,
+      block delete <code>/</code> lines, and common variables (#100+) after <code>G65</code>, <code>G66</code>, <code>M06</code>.
+      After <code>M98</code> everything is unknown.</li>
+    <li><b>Skipped</b> lines (jumped over by a GOTO that is known to be taken) are marked <code>↷ skipped by GOTO</code>.</li>
+    <li><b>IF lines</b> show their result: <code>→ true</code>, <code>→ false</code> or <code>→ ?</code> (needs a machine value).</li>
+  </ul>
+  <h4>Test an IF <span class="info-where">click the IF or GOTO</span></h4>
+  <p>When only the machine knows the answer (e.g. <code>IF[#11032 LT 7.3086]</code> reads the tool length),
+  the info panel offers <b>Test TRUE</b> and <b>Test FALSE</b>. The tool then treats that IF as your choice:
+  values below update, jumped lines are marked skipped, an alarm line reached by the jump shows
+  <code>⛔ alarm stops the program here</code>, and it jumps you to the line that would run next.
+  Active tests are listed in the legend strip (<code>L35 = TRUE ✕</code>); click one to clear it, or <b>Clear all</b>.
+  Tests also change what is compared. Editing that line, <b>New</b> or <b>Swap Panes</b> clears them.</p>
+  <p class="info-note">Loops are not run. When the tool is not sure, the value is unknown and the change stays red.</p>
+</section>
+
+<section id="info-hover" class="info-card">
+  <h3>Info panel <span class="info-where">bottom of the screen</span></h3>
+  <p><b>Click</b> a G-code, M-code, word, macro keyword or <code>#variable</code>: the panel opens at the bottom
+  and shows it. While the panel is open, <b>pointing</b> at code shows that code instead; move off the code
+  and it goes back to what you clicked, so you can press its buttons.</p>
+  <ul class="info-list">
+    <li><b>Left side:</b> values on that line, and buttons (Jump, Test TRUE / FALSE).</li>
+    <li><b>Right side:</b> what it means, and a link to the matching page on the
+      <a href="https://zappettiniconsulting.com/wiki" target="_blank" rel="noopener noreferrer">Zappettini Consulting CNC wiki</a>.</li>
+    <li><b>▾</b> (or <kbd>Esc</kbd>) folds it down to one line. <b>✕</b> closes it until you click code again.
+      It stays hidden until you click something.</li>
+  </ul>
+  <p class="info-note">Meanings are for a Brother mill (Fanuc as backup).</p>
+  <h4>Jumps</h4>
+  <ul class="info-list">
+    <li><b>GOTO / IF … GOTO / M99 P</b>: the panel shows the target line, the test result and which line runs next.
+      <b>Jump to line …</b> takes you there. <kbd>Ctrl</kbd>+click (<kbd>⌘</kbd>+click on Mac) jumps straight away.</li>
+    <li><b>N label</b> (e.g. <code>N98032</code>): the panel lists the lines that jump to it.</li>
+    <li>After a jump, <b>← Back to line …</b> appears at the bottom for 15 seconds.</li>
+  </ul>
+</section>
+
 <section id="info-limits" class="info-card info-warn">
   <h3>Not checked / limits</h3>
   <p>Don't rely on the tool for these:</p>
   <ul class="info-list">
     <li><b>No simulation.</b> It compares text, not toolpath shape. No backplot, no collision check.</li>
-    <li><b>Macro math is not calculated.</b> <code>#1=2*3</code> vs <code>#1=6</code> shows as a change.</li>
+    <li><b>Assignment lines are compared as text.</b> <code>#1=2*3</code> vs <code>#1=6</code> still shows as a change
+      (both work out to 6 — see the grey note). Only words like <code>X#1</code> are compared by value.</li>
+    <li><b>Loops and subprograms are not run.</b> Values changed inside them are unknown.</li>
     <li><b>Modal states other than motion and G90/G91</b> (G20/G21, G17–G19, G43 active…) are only flagged
       on the line where they change, not on every line after.</li>
     <li><b>Repeated-word check</b> only trusts the last written value. After G28/G30/G53, G100, a work offset or
@@ -272,9 +324,12 @@ const Info = (() => {
     <tr><td>Centre gutter</td><td>Marks show where diffs are. Click to jump.</td></tr>
     <tr><td>Toolpath header bar</td><td>Shows the current toolpath. Click for the list; click a row to jump.</td></tr>
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
-      Warns if line counts differ by more than 10%.</td></tr>
+      Warns if line counts differ by more than 10%. Right side: control, units per file
+      (G20 inch / G21 mm — red if they differ), and the pane, line and column of the cursor.</td></tr>
+    <tr><td>Click code</td><td>Info panel at the bottom: value, meaning and a wiki link. Pointing updates it while open.</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+click a GOTO</td><td>Jump to the line it goes to. <b>← Back</b> returns.</td></tr>
     <tr><td>Feeds &amp; Speeds</td><td>Per-toolpath table of RPM and feeds, left vs right.</td></tr>
-    <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file.</td></tr>
+    <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file, with the same line endings it came with (Windows CRLF stays CRLF).</td></tr>
   </table>
 </section>
 `;

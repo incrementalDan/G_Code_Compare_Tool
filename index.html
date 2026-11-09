@@ -37,7 +37,9 @@
     <span class="legend-item"><span class="legend-swatch legend-tolerance"></span>Within Tol.</span>
     <span class="legend-item"><span class="legend-swatch legend-added"></span>Added</span>
     <span class="legend-item"><span class="legend-swatch legend-removed"></span>Removed</span>
+    <span id="test-banner" hidden></span>
   </div>
+  <button id="jump-back" hidden></button>
 
   <!-- Main area -->
   <div id="main">
@@ -134,6 +136,24 @@
         <label for="opt-sync-scroll">Synchronized scrolling</label>
         <input type="checkbox" id="opt-sync-scroll" checked>
       </div>
+      <div class="setting-row" title="Show what #variables work out to, after each macro line (e.g. → X1.5)">
+        <label for="opt-show-var-values">Show variable values</label>
+        <input type="checkbox" id="opt-show-var-values" checked>
+      </div>
+    </div>
+  </div>
+
+  <!-- Info panel (hover-help.js): what the clicked / hovered code means -->
+  <div id="info-panel" hidden>
+    <div class="ip-head">
+      <button class="ip-toggle" title="Collapse / expand" aria-label="Collapse or expand">&#9662;</button>
+      <span class="ip-title"></span>
+      <span class="ip-where"></span>
+      <button class="ip-close" title="Close (opens again when you click code)" aria-label="Close">&#10005;</button>
+    </div>
+    <div class="ip-body">
+      <div class="ip-left"></div>
+      <div class="ip-right"></div>
     </div>
   </div>
 
@@ -148,6 +168,9 @@
     </div>
     <div id="status-center"></div>
     <div id="status-right">
+      <span title="Controller the rules are set up for">Control: Brother</span>
+      <span>Units: <span id="stat-units">–</span></span>
+      <span class="status-private" title="Nothing is uploaded. Files are read and compared inside this browser.">&#128274; Files stay on this computer</span>
       <span id="stat-cursor">Ln 1, Col 1</span>
     </div>
   </div>
@@ -159,11 +182,13 @@
   <noscript><p style="color:#d4d4d4;text-align:center;padding:40px">This tool requires JavaScript to be enabled.</p></noscript>
 
   <!-- Scripts -->
+  <script src="js/macro-eval.js"></script>
   <script src="js/diff-engine.js"></script>
   <script src="js/editor.js"></script>
   <script src="js/app.js"></script>
   <script src="js/feeds.js"></script>
   <script src="js/tools.js"></script>
   <script src="js/info.js"></script>
+  <script src="js/hover-help.js"></script>
 </body>
 </html>

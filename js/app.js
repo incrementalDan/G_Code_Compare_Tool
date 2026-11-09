@@ -16,7 +16,8 @@ const App = (() => {
     decimalPointMatters: false, // ON: X1 (no decimal) is not the same as X1.
     minorThreshold: 0.001,
     majorThreshold: 0.01,
-    syncScroll: true
+    syncScroll: true,
+    showVarValues: true // show worked-out #variable values after macro lines
   };
 
   let currentDiff = [];
@@ -27,6 +28,8 @@ const App = (() => {
   let lastDiffResult = null; // full engine result (parsed lines, toolpaths) for Feeds & Speeds
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
+  // "Test this IF as true / false" choices: line -> { raw, value } per side
+  let assumptions = { left: new Map(), right: new Map() };
 
   // === Example data ===
   const EXAMPLE_LEFT = `O1000 (PART PROGRAM - KNOWN GOOD)
@@ -120,6 +123,9 @@ N120 M30`;
     bindButtons();
     bindSettings();
     bindKeyboard();
+    bindJumpUi();
+    // Panes change size when the window or the info panel changes
+    window.addEventListener('resize', () => { Editor.refresh(); updateDiffMarkers(); });
 
     // Restore filenames
     let lf = null, rf = null;
@@ -169,6 +175,7 @@ N120 M30`;
     document.getElementById('minor-threshold-value').textContent = settings.minorThreshold;
     document.getElementById('major-threshold-value').textContent = settings.majorThreshold;
     document.getElementById('opt-sync-scroll').checked = settings.syncScroll;
+    document.getElementById('opt-show-var-values').checked = settings.showVarValues;
   }
 
   // === Button bindings ===
@@ -229,7 +236,8 @@ N120 M30`;
       'opt-ignore-line-numbers': 'ignoreLineNumbers',
       'opt-ignore-block-delete': 'ignoreBlockDelete',
       'opt-decimal-point-matters': 'decimalPointMatters',
-      'opt-sync-scroll': 'syncScroll'
+      'opt-sync-scroll': 'syncScroll',
+      'opt-show-var-values': 'showVarValues'
     };
 
     for (const [id, key] of Object.entries(checkboxMap)) {
@@ -238,6 +246,8 @@ N120 M30`;
         saveSettings();
         if (key === 'syncScroll') {
           Editor.setSyncScroll(e.target.checked);
+        } else if (key === 'showVarValues') {
+          applyAnnotations();
         } else {
           runDiff();
         }
@@ -414,7 +424,10 @@ N120 M30`;
 
     if (!leftText && !rightText) {
       currentDiff = [];
+      lastDiffResult = null;
       clearDecorations();
+      applyAnnotations();
+      if (typeof HoverHelp !== 'undefined') HoverHelp.refresh();
       updateStatusBar({ workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
       return;
     }
@@ -422,8 +435,19 @@ N120 M30`;
     const leftLines = leftText.split('\n');
     const rightLines = rightText.split('\n');
 
+    // Drop IF tests whose line was edited or moved
+    let pruned = false;
+    for (const [side, lines] of [['left', leftLines], ['right', rightLines]]) {
+      for (const [line, a] of assumptions[side]) {
+        if (lines[line] !== a.raw) { assumptions[side].delete(line); pruned = true; }
+      }
+    }
+    if (pruned) updateTestBanner();
+
     // Run semantic diff engine
     const diffResult = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
+      assumeLeft: assumptions.left,
+      assumeRight: assumptions.right,
       rules: settings,
       minorThreshold: settings.minorThreshold,
       majorThreshold: settings.majorThreshold
@@ -443,6 +467,133 @@ N120 M30`;
 
     // Apply decorations and update UI
     applyDecorations();
+    applyAnnotations();
+    if (typeof HoverHelp !== 'undefined') HoverHelp.refresh();
+  }
+
+  // === Variable values shown after macro lines ===
+  function fmtValue(v) {
+    if (v === null) return 'empty';
+    if (typeof v !== 'number') return '?';
+    return String(+v.toFixed(4));
+  }
+
+  /** "→ X1.5 Y?" after a line that uses #variables; "= 4" after an assignment. */
+  function lineNote(p) {
+    if (p.macroSkipped) return '  \u21b7 skipped by GOTO';
+    const parts = [];
+    if (p.cond) {
+      parts.push(p.cond.assumed ? (p.cond.value ? 'TRUE (testing)' : 'FALSE (testing)')
+        : p.cond.value === 1 ? 'true' : p.cond.value === 0 ? 'false' : '?');
+    }
+    if (p.resolved) {
+      for (const L of Object.keys(p.resolved)) parts.push(L + fmtValue(p.resolved[L]));
+    }
+    if (p.assigned) {
+      // Plain "#101=1.5" needs no note; "#102=#101*2" does
+      const rhs = p.raw.replace(/\([^)]*\)?/g, '').replace(/;.*$/, '').split('=').slice(1).join('=').trim();
+      const plain = /^[+-]?(\d+\.?\d*|\.\d+)$/.test(rhs) && p.assigned.index !== undefined;
+      if (!plain) parts.push((p.assigned.index !== undefined ? '#' + p.assigned.index : '#?') + ' = ' + fmtValue(p.assigned.value));
+    }
+    let note = parts.length ? '  \u2192 ' + parts.join(' ') : '';
+    if (p.alarmStop) note += p.alarmStop === true ? '  \u26d4 alarm stops the program here'
+      : '  \u26d4 alarm stops the program here (if this / line runs)';
+    return note;
+  }
+
+  function annotationsFor(parsed) {
+    const out = {};
+    if (!parsed) return out;
+    for (let i = 0; i < parsed.length; i++) {
+      const p = parsed[i];
+      if (!p.resolved && !p.assigned && !p.macroSkipped && !p.cond && !p.alarmStop) continue;
+      const note = lineNote(p);
+      if (note) out[i] = note;
+    }
+    return out;
+  }
+
+  // === IF tests ("what if this condition is true / false") ===
+  function setAssumption(side, line, value) {
+    const lines = Editor.getValue(side).split('\n');
+    if (line < 0 || line >= lines.length) return;
+    if (value === null) assumptions[side].delete(line);
+    else assumptions[side].set(line, { raw: lines[line], value: !!value });
+    runDiff();
+    updateTestBanner();
+  }
+
+  function clearAssumptions(rerun) {
+    const had = assumptions.left.size + assumptions.right.size > 0;
+    assumptions = { left: new Map(), right: new Map() };
+    updateTestBanner();
+    if (had && rerun) runDiff();
+  }
+
+  function updateTestBanner() {
+    const el = document.getElementById('test-banner');
+    if (!el) return;
+    const items = [];
+    for (const side of ['left', 'right']) {
+      for (const [line, a] of [...assumptions[side].entries()].sort((x, y) => x[0] - y[0])) {
+        items.push(`<button data-side="${side}" data-line="${line}" title="Clear this test">` +
+          `${side === 'left' ? 'L' : 'R'}${line + 1} = ${a.value ? 'TRUE' : 'FALSE'} \u2715</button>`);
+      }
+    }
+    if (!items.length) { el.hidden = true; el.innerHTML = ''; return; }
+    el.hidden = false;
+    el.innerHTML = `<span title="Values below these lines follow your choice">Testing IF:</span>${items.join('')}` +
+      `<button data-clear-all="1">Clear all</button>`;
+  }
+
+  // === Jumping (GOTO / M99 P targets) ===
+  let backTimer = null;
+  function jumpTo(side, line, fromLine) {
+    Editor.scrollToLine(side, line);
+    Editor.flashLine(side, line);
+    const btn = document.getElementById('jump-back');
+    if (!btn) return;
+    clearTimeout(backTimer);
+    if (fromLine === undefined || fromLine === null || fromLine === line) { btn.hidden = true; return; }
+    btn.textContent = `\u2190 Back to line ${fromLine + 1}`;
+    btn.dataset.side = side;
+    btn.dataset.line = fromLine;
+    btn.hidden = false;
+    backTimer = setTimeout(() => { btn.hidden = true; }, 15000);
+  }
+
+  function bindJumpUi() {
+    const back = document.getElementById('jump-back');
+    if (back) back.addEventListener('click', () => {
+      back.hidden = true;
+      jumpTo(back.dataset.side, parseInt(back.dataset.line, 10));
+    });
+    const banner = document.getElementById('test-banner');
+    if (banner) banner.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.clearAll) clearAssumptions(true);
+      else setAssumption(b.dataset.side, parseInt(b.dataset.line, 10), null);
+    });
+  }
+
+  function applyAnnotations() {
+    const on = settings.showVarValues && lastDiffResult;
+    Editor.setAnnotations('left', on ? annotationsFor(lastDiffResult.leftParsed) : {});
+    Editor.setAnnotations('right', on ? annotationsFor(lastDiffResult.rightParsed) : {});
+  }
+
+  /** 'in' / 'mm' from the first G20 / G21 in a file, or '' if none. */
+  function unitsOf(parsed) {
+    if (!parsed) return '';
+    for (const p of parsed) {
+      for (const g of p.gCodes) {
+        const n = parseFloat(g.substring(1));
+        if (n === 20) return 'in';
+        if (n === 21) return 'mm';
+      }
+    }
+    return '';
   }
 
   /**
@@ -701,6 +852,20 @@ N120 M30`;
     if (tpLeftEl) tpLeftEl.textContent = leftTpCount;
     if (tpRightEl) tpRightEl.textContent = rightTpCount;
 
+    // Units (G20 inch / G21 mm) per file
+    const uEl = document.getElementById('stat-units');
+    if (uEl) {
+      const uL = leftLines ? unitsOf(lastDiffResult && lastDiffResult.leftParsed) : '';
+      const uR = rightLines ? unitsOf(lastDiffResult && lastDiffResult.rightParsed) : '';
+      const differ = uL && uR && uL !== uR;
+      uEl.textContent = (uL || uR) ? (uL || 'not set') + ' / ' + (uR || 'not set') :
+        (leftLines || rightLines) ? 'not in file' : '–';
+      uEl.classList.toggle('status-units-differ', !!differ);
+      uEl.title = differ ? 'Units differ: one file is inch (G20), the other metric (G21)'
+        : (uL || uR) ? 'Units from G20 (inch) / G21 (mm): left / right'
+        : 'No G20 / G21 in the files: the machine uses its own default units';
+    }
+
     // Line count warning
     const center = document.getElementById('status-center');
     if (leftLines > 0 && rightLines > 0) {
@@ -742,7 +907,11 @@ N120 M30`;
     disabledToolpathIds.clear();
     toleranceOffIds.clear();
     Editor.setTolAllActive(true);
+    clearAssumptions(false);
+    lastDiffResult = null;
     clearDecorations();
+    applyAnnotations();
+    if (typeof HoverHelp !== 'undefined') HoverHelp.refresh();
     updateStatusBar({ workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
   }
 
@@ -751,14 +920,17 @@ N120 M30`;
     const rightText = Editor.getValue('right');
     const leftName = Editor.getFilename('left');
     const rightName = Editor.getFilename('right');
+    const leftEol = Editor.getEol('left');
+    const rightEol = Editor.getEol('right');
 
-    // Sides flip, so per-toolpath choices no longer apply
+    // Sides flip, so per-toolpath choices and IF tests no longer apply
+    clearAssumptions(false);
     disabledToolpathIds.clear();
     toleranceOffIds.clear();
     currentToolpaths = { left: [], right: [] };
 
-    Editor.setValue('left', rightText);
-    Editor.setValue('right', leftText);
+    Editor.setValue('left', rightText, rightEol);
+    Editor.setValue('right', leftText, leftEol);
     Editor.setFilename('left', rightName);
     Editor.setFilename('right', leftName);
 
@@ -766,7 +938,8 @@ N120 M30`;
   }
 
   function saveFile(side) {
-    const content = Editor.getValue(side);
+    // Write the file's own line endings back (Windows CRLF stays CRLF)
+    const content = Editor.getValue(side).replace(/\r?\n/g, Editor.getEol(side));
     const filename = Editor.getFilename(side);
     const name = (filename && filename !== 'untitled') ? filename : 'untitled.nc';
 
@@ -824,5 +997,5 @@ N120 M30`;
     return lastDiffResult;
   }
 
-  return { runDiff, loadExample, getDiffContext };
+  return { runDiff, loadExample, getDiffContext, setAssumption, jumpTo };
 })();

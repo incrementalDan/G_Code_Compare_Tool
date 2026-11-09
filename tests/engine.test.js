@@ -3,11 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'diff-engine.js'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'js', 'macro-eval.js'), 'utf8') + '\n' +
+  fs.readFileSync(path.join(__dirname, '..', 'js', 'diff-engine.js'), 'utf8');
 const ctx = {};
 const feedsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'feeds.js'), 'utf8');
 const toolsSrc = fs.readFileSync(path.join(__dirname, '..', 'js', 'tools.js'), 'utf8');
-vm.runInNewContext(src + '\n' + feedsSrc + '\n' + toolsSrc + '\nthis.DiffEngine = DiffEngine; this.Feeds = Feeds; this.Tools = Tools;', ctx);
+vm.runInNewContext(src + '\n' + feedsSrc + '\n' + toolsSrc + '\nthis.DiffEngine = DiffEngine; this.MacroEval = MacroEval; this.Feeds = Feeds; this.Tools = Tools;', ctx);
 const DE = ctx.DiffEngine;
 const TL = ctx.Tools;
 const FD = ctx.Feeds;
@@ -413,6 +414,86 @@ test('H/D mismatch, not-listed, never-used warnings', () => {
 test('value in one file only is not red', () => {
   const t = toolRows(mini(['(T1 - ID=X - OOH=1)']), mini(['(T1 - ID=X)']));
   eq(t.rows[0].cells.ooh.changed + ' ' + t.rows[0].cells.ooh.oneSided, 'false true');
+});
+
+console.log('\nMacro variables');
+function resolve(lines) {
+  const P = lines.map(l => DE.parseGCodeLine(l));
+  ctx.MacroEval.resolveFile(P);
+  return P;
+}
+const rv = (lines, i, k) => { const r = resolve(lines)[i].resolved; return r ? r[k] : 'none'; };
+test('simple assignment', () => eq(rv(['#101=1.5', 'G1 X#101'], 1, 'X'), 1.5));
+test('math and brackets', () => eq(rv(['#1=2.', '#2=[#1*3]+1', 'G1 Z-[#2/2]'], 2, 'Z'), -3.5));
+test('functions in degrees', () => eq(rv(['G1 X[SIN[30]*10]'], 0, 'X'), 5));
+test('ATAN[a]/[b]', () => eq(rv(['#5=ATAN[1]/[-1]', 'G0 C#5'], 1, 'C'), 135));
+test('machine variable is unknown', () => eq(rv(['G1 X#5221'], 0, 'X'), undefined));
+test('indirect assignment', () => eq(rv(['#[100+1]=3', 'G0 X#101'], 1, 'X'), 3));
+test('loop variable is unknown after the loop', () =>
+  eq(rv(['#1=0', 'WHILE[#1LT3]DO1', '#1=#1+1', 'END1', 'G1 X#1'], 4, 'X'), undefined));
+test('known GOTO skips lines', () =>
+  eq(rv(['#1=1', '#2=1', 'IF[#1EQ1]GOTO10', '#2=5', 'N10 G1 X#2'], 4, 'X'), 1));
+test('unknown GOTO makes jumped values unknown', () =>
+  eq(rv(['#2=1', 'IF[#9GT1]GOTO10', '#2=5', 'N10 G1 X#2'], 3, 'X'), undefined));
+test('block delete assignment is unknown', () => eq(rv(['#2=1', '/ #2=3', 'G1 X#2'], 2, 'X'), undefined));
+test('G65 clears common vars, keeps locals', () => {
+  const P = resolve(['#1=1', '#100=2', 'G65 P9000', 'G1 X#1 Y#100']);
+  eq(P[3].resolved.X + ' ' + P[3].resolved.Y, '1 undefined');
+});
+test('X#101 vs X1.5 with same value is minor', () =>
+  eq(types(['#101=1.5', 'G1 X#101'], ['#101=1.5', 'G1 X1.5']), 'equal,minor'));
+test('X#101 vs X1.6 is critical', () =>
+  eq(types(['#101=1.5', 'G1 X#101'], ['#101=1.5', 'G1 X1.6']), 'equal,critical'));
+test('same text, different value is critical on the move line', () => {
+  const d = diff(['#101=1.5', 'G1 X#101'], ['#101=2.5', 'G1 X#101']);
+  eq(d.ops.map(o => o.type).join(','), 'critical,critical');
+});
+test('unknown value vs number stays critical', () =>
+  eq(types(['G1 X#5221'], ['G1 X1.5']), 'critical'));
+
+console.log('\nJumps and IF tests');
+function resolveA(lines, assume) {
+  const P = lines.map(l => DE.parseGCodeLine(l));
+  ctx.MacroEval.resolveFile(P, { assume });
+  return P;
+}
+const tl = ['#1=1', 'IF[#11032LT7.3]GOTO20', '#2=5', 'G1 X#2', 'N20 #3000=32', 'G1 Y#1'];
+test('GOTO records its target line', () => {
+  const P = resolveA(tl);
+  eq(P[1].jump.targetLine + ' ' + P[1].jump.conditional + ' ' + P[4].jumpSources.join(','), '4 true 1');
+});
+test('unknown condition is reported', () => eq(resolveA(tl)[1].cond.value, undefined));
+test('test as TRUE: jumped lines skipped, alarm stops', () => {
+  const P = resolveA(tl, new Map([[1, { raw: tl[1], value: true }]]));
+  eq([P[1].cond.assumed, !!P[2].macroSkipped, !!P[3].macroSkipped, P[4].alarmStop].join(','), 'true,true,true,true');
+});
+test('test as FALSE: next line runs, value known', () => {
+  const P = resolveA(tl, new Map([[1, { raw: tl[1], value: false }]]));
+  eq(P[3].resolved.X, 5);
+});
+test('test ignored when the line text changed', () => {
+  const P = resolveA(tl, new Map([[1, { raw: 'something else', value: true }]]));
+  eq(P[1].cond.assumed, false);
+});
+test('no alarm note on a / line without a test', () => {
+  const L = ['/ IF[#11032LT7.3]GOTO20', '/ GOTO 30', '/ N20 #3000=32', '/ N30'];
+  eq(resolveA(L)[2].alarmStop, undefined);
+});
+test('line skipped by one GOTO but reached by another is not marked skipped', () => {
+  const P = resolveA(['#1=1', 'GOTO 20', 'N10 #1=2', 'N20 G1 X#1', 'GOTO 10']);
+  eq(!!P[2].macroSkipped, false);
+});
+test('plain forward GOTO still skips', () => {
+  const P = resolveA(['#1=1', 'GOTO 20', '#1=2', 'N20 G1 X#1']);
+  eq(!!P[2].macroSkipped + ' ' + P[3].resolved.X, 'true 1');
+});
+test('M99 P records its jump', () => {
+  const P = resolveA(['N10 G0 X0.', 'M99 P10']);
+  eq(P[1].jump.targetLine + ' ' + P[1].jump.kind, '0 m99');
+});
+test('IF THEN can be tested', () => {
+  const L = ['#2=1', 'IF[#5221GT0]THEN#2=7', 'G0 X#2'];
+  eq(resolveA(L, new Map([[1, { raw: L[1], value: true }]]))[2].resolved.X, 7);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

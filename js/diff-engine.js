@@ -1109,12 +1109,18 @@ const DiffEngine = (() => {
         rightTokens: parsedB.tokens.filter(t => t.type === 'mCode') });
     }
 
+    // Letters written as an expression (X#101, X[#1+2]) on either side are
+    // compared once, in the expression section below, using resolved values.
+    const exprLetters = new Set([...Object.keys(parsedA.exprs), ...Object.keys(parsedB.exprs)]);
+
     // --- Tool, offsets, spindle, feed ---
-    compareField(parsedA, parsedB, 'tool', 'critical', tokenDiffs);
-    compareField(parsedA, parsedB, 'hOffset', 'critical', tokenDiffs);
-    compareField(parsedA, parsedB, 'dOffset', 'critical', tokenDiffs);
-    compareField(parsedA, parsedB, 'spindle', 'critical', tokenDiffs);
-    if (parsedA.feed === null && parsedB.feed !== null && sameAsActive(ctxA, 'F', parsedB.feed)) {
+    if (!exprLetters.has('T')) compareField(parsedA, parsedB, 'tool', 'critical', tokenDiffs);
+    if (!exprLetters.has('H')) compareField(parsedA, parsedB, 'hOffset', 'critical', tokenDiffs);
+    if (!exprLetters.has('D')) compareField(parsedA, parsedB, 'dOffset', 'critical', tokenDiffs);
+    if (!exprLetters.has('S')) compareField(parsedA, parsedB, 'spindle', 'critical', tokenDiffs);
+    if (exprLetters.has('F')) {
+      // handled with expressions
+    } else if (parsedA.feed === null && parsedB.feed !== null && sameAsActive(ctxA, 'F', parsedB.feed)) {
       tokenDiffs.push(redundantDiff('F', 'feed', parsedA, parsedB));
     } else if (parsedB.feed === null && parsedA.feed !== null && sameAsActive(ctxB, 'F', parsedA.feed)) {
       tokenDiffs.push(redundantDiff('F', 'feed', parsedA, parsedB));
@@ -1124,6 +1130,7 @@ const DiffEngine = (() => {
 
     // --- Axes. Value change -> graded by tolerance. Missing on one side -> critical. ---
     for (const axis of ['X', 'Y', 'Z', 'A', 'B', 'C']) {
+      if (exprLetters.has(axis)) continue;
       const va = parsedA.axes[axis] ?? parsedA.rotary[axis] ?? null;
       const vb = parsedB.axes[axis] ?? parsedB.rotary[axis] ?? null;
       if (va === null && vb === null) continue;
@@ -1149,6 +1156,7 @@ const DiffEngine = (() => {
 
     // --- Arc params ---
     for (const p of ['I', 'J', 'K']) {
+      if (exprLetters.has(p)) continue;
       const va = parsedA.arcParams[p] ?? null;
       const vb = parsedB.arcParams[p] ?? null;
       if (va === null && vb === null) continue;
@@ -1209,6 +1217,7 @@ const DiffEngine = (() => {
       for (const t of tB) mapB[t.param] = t.value;
       const keys = new Set([...Object.keys(mapA), ...Object.keys(mapB)]);
       for (const k of keys) {
+        if (exprLetters.has(k)) continue;
         const va = mapA[k], vb = mapB[k];
         if (va === undefined || vb === undefined || Math.abs(va - vb) > FP_EPS) {
           const wo = (extWO && k === 'P') || (offsetLine && ttype === 'param');
@@ -1222,16 +1231,27 @@ const DiffEngine = (() => {
       }
     }
 
-    // --- Expression words: X[#101+1], X#101 (compared as text) ---
-    const exprKeys = new Set([...Object.keys(parsedA.exprs), ...Object.keys(parsedB.exprs)]);
-    for (const k of exprKeys) {
-      if (parsedA.exprs[k] !== parsedB.exprs[k]) {
-        const wo = extWO && k === 'P'; // G54.1 P#153 (pallet work offset)
-        tokenDiffs.push({ field: wo ? 'workOffset' : 'expr-' + k, severity: wo ? 'workoffset' : 'critical',
-          leftVal: parsedA.exprs[k], rightVal: parsedB.exprs[k],
-          leftTokens: parsedA.tokens.filter(t => t.type === 'expr' && t.param === k),
-          rightTokens: parsedB.tokens.filter(t => t.type === 'expr' && t.param === k) });
+    // --- Expression words: X[#101+1], X#101 ---
+    // Compared as text, plus the value worked out from the #variables
+    // (MacroEval). Same text but a different value -> critical. Different
+    // text but the same known value (X#101 vs X1.5 with #101 = 1.5) -> minor.
+    for (const k of exprLetters) {
+      const wo = extWO && k === 'P'; // G54.1 P#153 (pallet work offset)
+      const tokA = wordTokens(parsedA, k), tokB = wordTokens(parsedB, k);
+      const va = wordValue(parsedA, k), vb = wordValue(parsedB, k);
+      const known = typeof va === 'number' && typeof vb === 'number';
+      if (parsedA.exprs[k] === parsedB.exprs[k]) {
+        if (known && Math.abs(va - vb) > FP_EPS) {
+          tokenDiffs.push({ field: wo ? 'workOffset' : 'exprValue-' + k, severity: wo ? 'workoffset' : 'critical',
+            leftVal: va, rightVal: vb, leftTokens: tokA, rightTokens: tokB });
+        }
+        continue;
       }
+      const same = known && Math.abs(va - vb) <= FP_EPS;
+      tokenDiffs.push({ field: wo ? 'workOffset' : (same ? 'exprSame-' : 'expr-') + k,
+        severity: wo ? 'workoffset' : (same ? 'minor' : 'critical'),
+        leftVal: parsedA.exprs[k] ?? (tokA[0] && tokA[0].text), rightVal: parsedB.exprs[k] ?? (tokB[0] && tokB[0].text),
+        leftValue: va, rightValue: vb, leftTokens: tokA, rightTokens: tokB });
     }
 
     // --- Characters the parser could not read (stray or mistyped) ---
@@ -1376,6 +1396,23 @@ const DiffEngine = (() => {
   /** 5. / 5.0 / 05 -> 5 inside macro text, so number format does not count as a change. */
   function normMacroNumbers(text) {
     return text.replace(/\d+\.\d*|\.\d+|\d+/g, m => String(parseFloat(m)));
+  }
+
+  /** Tokens that carry word letter k (plain number or expression). */
+  function wordTokens(p, k) {
+    return p.tokens.filter(t => t.type === 'expr' ? t.param === k :
+      t.value !== undefined && t.type !== 'lineNumber' && t.type !== 'program' &&
+      t.text.trim()[0].toUpperCase() === k);
+  }
+
+  /** Value of word letter k: number, undefined (unknown / vacant) or 'absent'. */
+  function wordValue(p, k) {
+    if (p.exprs[k] !== undefined) {
+      const v = p.resolved ? p.resolved[k] : undefined;
+      return typeof v === 'number' ? v : undefined;
+    }
+    const t = wordTokens(p, k)[0];
+    return t ? t.value : 'absent';
   }
 
   function compareField(parsedA, parsedB, field, severity, tokenDiffs) {
@@ -1807,6 +1844,11 @@ const DiffEngine = (() => {
     const rightTrack = trackContext(rightParsed, rightModal);
     markJumpTargets(leftParsed);
     markJumpTargets(rightParsed);
+    // Work out #variable values so X#101 can be compared as a number
+    if (typeof MacroEval !== 'undefined') {
+      MacroEval.resolveFile(leftParsed, { assume: opts.assumeLeft });
+      MacroEval.resolveFile(rightParsed, { assume: opts.assumeRight });
+    }
 
     // Segment into toolpaths
     const leftToolpaths = segmentIntoToolpaths(leftLines, leftParsed);

@@ -76,6 +76,7 @@ const Editor = (() => {
       decorations: {},
       disabledLines: new Set(),
       filename: 'untitled',
+      annotations: {},      // line index -> short text shown after the line (variable values)
       alignmentPadding: {},
       toolpathSeparators: {},
       separatorPositions: [], // [{id, label, disabled, offsetTop}]
@@ -91,19 +92,35 @@ const Editor = (() => {
     display.addEventListener('mousedown', (e) => {
       if (e.target.closest('.tp-separator')) return;
       e.preventDefault();
+      // Ctrl/Cmd + click on a GOTO / M99 P: jump to its target (hover-help.js)
+      if ((e.ctrlKey || e.metaKey) && ctrlClickCallback) {
+        const pt = pointAt(state, e);
+        if (pt && ctrlClickCallback(pt)) return;
+      }
+      if (clickCallback) clickCallback(pointAt(state, e));
       const rect = display.getBoundingClientRect();
       const row = Math.max(0, Math.floor((e.clientY - rect.top) / LINE_HEIGHT));
       const line = lineForRow(state, row);
       const col = columnAt(state, e.clientX);
-      const lineText = state.lines[line] || '';
+      // Count in the textarea's own text: browsers drop the \r of Windows line ends there
+      const taLines = textarea.value.split('\n');
+      const lineText = taLines[line] || '';
       let pos = 0;
-      for (let i = 0; i < line; i++) pos += state.lines[i].length + 1;
+      for (let i = 0; i < line && i < taLines.length; i++) pos += taLines[i].length + 1;
       pos += Math.min(col, lineText.length);
       textarea.focus({ preventScroll: true });
       textarea.selectionStart = textarea.selectionEnd = Math.min(pos, textarea.value.length);
       setCursorLine(state, line);
-      updateCursorPos(textarea);
+      updateCursorPos(textarea, side);
     });
+
+    // Hover: report the line and character under the mouse (hover-help.js)
+    display.addEventListener('mousemove', (e) => {
+      if (!hoverCallback) return;
+      const pt = pointAt(state, e);
+      hoverCallback(pt);
+    });
+    display.addEventListener('mouseleave', () => { if (hoverCallback) hoverCallback(null); });
 
     // Event delegation for separator rows (bound once)
     display.addEventListener('click', (e) => {
@@ -174,7 +191,7 @@ const Editor = (() => {
     let cursorTimer = null;
     const debouncedCursor = () => {
       clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(() => { updateCursorPos(textarea); followCursor(state); }, 50);
+      cursorTimer = setTimeout(() => { updateCursorPos(textarea, side); followCursor(state); }, 50);
     };
     textarea.addEventListener('keyup', debouncedCursor);
 
@@ -199,11 +216,12 @@ const Editor = (() => {
   // Cursor helpers
   // =====================================================
 
-  function updateCursorPos(textarea) {
+  function updateCursorPos(textarea, side) {
     const val = textarea.value.substring(0, textarea.selectionStart);
     const lines = val.split('\n');
     const el = document.getElementById('stat-cursor');
-    if (el) el.textContent = `Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
+    const pane = side === 'right' ? 'Right' : side === 'left' ? 'Left' : '';
+    if (el) el.textContent = `${pane ? pane + ' \u00b7 ' : ''}Ln ${lines.length}, Col ${lines[lines.length - 1].length + 1}`;
   }
 
   /** The text line shown at a display row (padding/separator rows map to the next line). */
@@ -439,9 +457,12 @@ const Editor = (() => {
     const tokenDiffs = (!isDisabled && deco) ? deco.tokenDiffs : null;
     const bgClass = type ? ` diff-bg-${type}` : '';
     const disabledClass = isDisabled ? ' line-disabled' : '';
-    const cursorClass = i === state.cursorLine ? ' cursor-line' : '';
-    const highlighted = syntaxHighlightLine(state.lines[i], tokenDiffs, state.side);
-    return `<div class="editor-line${bgClass}${disabledClass}${cursorClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || '&nbsp;'}</span></div>`;
+    const cursorClass = (i === state.cursorLine ? ' cursor-line' : '') + (i === state.flashLine ? ' jump-flash' : '');
+    // A trailing \r (Windows line end) would break the row before the value note
+    const highlighted = syntaxHighlightLine(state.lines[i].replace(/\r$/, ''), tokenDiffs, state.side);
+    const note = state.annotations[i];
+    const ghost = note ? `<span class="var-ghost">${escapeHtml(note)}</span>` : '';
+    return `<div class="editor-line${bgClass}${disabledClass}${cursorClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || (ghost ? '' : '&nbsp;')}${ghost}</span></div>`;
   }
 
   /** Character ranges of changed tokens for one side. */
@@ -581,9 +602,15 @@ const Editor = (() => {
     return state ? state.content : '';
   }
 
-  function setValue(side, text) {
+  /**
+   * Load text into a pane. eol = the file's line ending ('\r\n' or '\n'),
+   * remembered so Save writes it back the same way (the browser's text box
+   * drops \r after any edit). Worked out from the text when not given.
+   */
+  function setValue(side, text, eol) {
     const state = stateFor(side);
     if (!state) return;
+    state.eol = eol || (/\r\n/.test(text) ? '\r\n' : '\n');
     state.content = text;
     state.textarea.value = text;
     state.cursorLine = -1;
@@ -601,6 +628,68 @@ const Editor = (() => {
     state.disabledLines = disabledLines || new Set();
     state.toolpathSeparators = separators || {};
     render(state);
+  }
+
+  /** Short notes shown after lines, e.g. "→ X1.5" (resolved variable values). */
+  function setAnnotations(side, annotations) {
+    const state = stateFor(side);
+    if (!state) return;
+    state.annotations = annotations || {};
+    renderWindow(state, true);
+  }
+
+  let hoverCallback = null;
+  let ctrlClickCallback = null;
+  let clickCallback = null;
+  function setHoverCallback(fn) { hoverCallback = fn; }
+  function setClickCallback(fn) { clickCallback = fn; }
+
+  /** Redraw the visible rows after the panes change size (info panel opened / closed). */
+  function refresh() {
+    for (const st of [leftState, rightState]) if (st) scheduleWindow(st);
+  }
+  function setCtrlClickCallback(fn) { ctrlClickCallback = fn; }
+
+  /** Line, column and screen position under the mouse, or null off a code line. */
+  function pointAt(state, e) {
+    const rect = state.display.getBoundingClientRect();
+    const row = Math.floor((e.clientY - rect.top) / LINE_HEIGHT);
+    const r = state.rows[row];
+    if (!r || r.kind !== 'line' || e.target.closest('.tp-separator')) return null;
+    const content = state.windowEl.querySelector('.line-content');
+    if (!content) return null;
+    const left = content.getBoundingClientRect().left + parseFloat(getComputedStyle(content).paddingLeft || 0);
+    const col = Math.floor((e.clientX - left) / charWidth(state));
+    return { side: state.side, line: r.line, col, text: state.lines[r.line] || '', x: e.clientX, y: e.clientY,
+      rowTop: rect.top + row * LINE_HEIGHT };
+  }
+
+  /** Briefly highlight a line (after a jump). */
+  function flashLine(side, line) {
+    const state = stateFor(side);
+    if (!state) return;
+    state.flashLine = line;
+    renderWindow(state, true);
+    clearTimeout(state.flashTimer);
+    state.flashTimer = setTimeout(() => { state.flashLine = -1; }, 1700);
+  }
+
+  /** Line ending of the file loaded in a pane ('\r\n' or '\n'). */
+  function getEol(side) {
+    const state = stateFor(side);
+    return (state && state.eol) || '\n';
+  }
+
+  /** Scroll just enough that a line is fully on screen (e.g. after the info panel opens). */
+  function ensureLineVisible(side, lineNum) {
+    const state = stateFor(side);
+    if (!state) return;
+    const row = state.lineToRow[lineNum];
+    if (row === undefined) return;
+    const w = state.wrapper;
+    const top = row * LINE_HEIGHT;
+    if (top + LINE_HEIGHT > w.scrollTop + w.clientHeight) w.scrollTop = top + 2 * LINE_HEIGHT - w.clientHeight;
+    else if (top < w.scrollTop) w.scrollTop = top;
   }
 
   function setSeparatorCallbacks(side, callbacks) {
@@ -655,8 +744,8 @@ const Editor = (() => {
   }
 
   return {
-    init, getValue, setValue, setFilename, getFilename,
-    setDecorations, scrollToLine, setSyncScroll,
+    init, getValue, setValue, getEol, ensureLineVisible, setFilename, getFilename,
+    setDecorations, setAnnotations, setHoverCallback, setCtrlClickCallback, setClickCallback, refresh, flashLine, scrollToLine, setSyncScroll,
     setSeparatorCallbacks, setDropdownState, setTolAllActive,
     getDisplayRow, getTotalRows, getLineCount, loadFileInto,
     syntaxHighlightLine

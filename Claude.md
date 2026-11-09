@@ -22,12 +22,14 @@ gcode-compare/
 ├── css/
 │   └── style.css       — all styles (dark theme, deco colors, separator UI)
 ├── js/
+│   ├── macro-eval.js   — #variable resolver (works out X#101, X[#1*2]); loaded before diff-engine
 │   ├── diff-engine.js  — parser, toolpath segmentation, LCS, token classification
-│   ├── editor.js       — single-layer line-div editor, rendering, decorations
+│   ├── editor.js       — single-layer line-div editor, rendering, decorations, hover hook
 │   ├── app.js          — UI wiring, settings, state, diff coordination
 │   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
 │   ├── tools.js        — Tool Table: tool list / gauge / usage / fixture compare + popup
-│   └── info.js         — in-app Info popup: what is / isn't checked
+│   ├── info.js         — in-app Info popup: what is / isn't checked
+│   └── hover-help.js   — bottom info panel: meaning/values of G/M/words/#vars + Zappettini wiki links
 ├── posts/              — shop Fusion post processors (reference only, not loaded)
 │   ├── Brother Speedio M multi-tasking - APW_v8_9_1.cps
 │   └── Brother Speedio R - APW_R_v2.cps
@@ -57,6 +59,8 @@ Sections (keep related items grouped in the right one):
 - Tool Table — columns, warnings, red/dim rule (keep in sync with tools.js)
 - Filters you control — Comparison rules table, Tolerance table, Show/hide
 - Colours
+- Variable values (what MacroEval works out / leaves unknown)
+- Info panel (hover help)
 - Not checked / limits — anything a user must NOT rely on
 - Navigation
 
@@ -288,11 +292,78 @@ Not used by the UI — app.js counts only what is actually displayed.
 disabled-toolpath ops
 
 **Status bar**: Toolpaths L/R, Work offset count, Critical count, Minor count, Lines L/R,
-line-count mismatch warning (>10% difference), cursor position
+line-count mismatch warning (>10% difference); right side: control, units, privacy note, cursor pane + position
 
 **Other**: New (clear both), Swap panes, Load Example (built-in test G-code)
 
 ---
+
+### Macro variables (`macro-eval.js`)
+
+- `MacroEval.resolveFile(parsed)` runs inside computeSemanticDiff on both files.
+- Walks the file once. Values: number, null (vacant, #0), undefined (unknown).
+- Reads per line (comments removed): `#n=expr`, `#[expr]=expr`, `IF[..]THEN`,
+  `IF[..]GOTO n`, `GOTO n`, `WHILE[..]DOn` / `ENDn`, and G-code words with
+  expressions. Maths: + - * / MOD AND OR XOR, brackets, SIN COS TAN ASIN ACOS
+  ATAN (ATAN[a]/[b]) SQRT ABS ROUND FIX FUP LN EXP POW (degrees). EQ/NE tell
+  vacant from 0. Float noise trimmed to 1e-9.
+- Never runs loops. Unknown (honest) cases:
+  - vars changed inside WHILE..END or a backward GOTO range: unknown from the
+    loop start and after the loop end
+  - forward GOTO with unknown condition: vars changed in the jumped-over lines
+    become unknown at the label. Known-true: lines skipped (p.macroSkipped)
+  - block delete `/` assignment: unknown if the value would change
+  - G65 / G66 / M06: commons (#34+) unknown. M98 and unreadable macro lines: all unknown
+  - indirect write with unknown index: all unknown. O-number line: new program, all unknown
+  - unset vars are unknown, not vacant (machine may hold a value)
+- Adds to parsed lines: `resolved` {letter: value}, `varRefs` {n: value before
+  the line}, `assigned` {index, value}, `macroSkipped`, `jump` {targetN,
+  targetLine, conditional, loop, kind 'goto'|'m99'}, `cond` {value 1/0/undefined,
+  assumed}, `jumpSources` [lines], `alarmStop` (true, or 'maybe' on a / line
+  reached by a tested jump).
+- IF tests: `resolveFile(parsed, { assume })`, assume = Map line -> {raw, value}.
+  Used only while the line text still equals raw. A tested IF counts as sure
+  (also on / lines). app.js keeps `assumptions` per side, passes them as
+  opts.assumeLeft / assumeRight to computeSemanticDiff, lists them in
+  #test-banner (legend strip), prunes edited lines, clears on New / Swap.
+- classifyTokens: letters with an expression on either side are compared once,
+  in the expression section (skipped in axis / arc / F / S / T / H / D / param
+  checks). Same text + different known value -> critical (exprValue-X).
+  Different text + same known value -> minor (exprSame-X). Otherwise critical.
+- app.js shows the values as a grey note after the line (`→ X1.5 Y?`,
+  `→ #102 = 4`, `↷ skipped by GOTO`). Setting "Show variable values" (ON).
+
+### Info panel (`hover-help.js`, `#info-panel` in index.html)
+
+- Bottom panel like VS Code, between the panes and the status bar. No floating tip.
+- Hidden until code is clicked. Click (Editor.setClickCallback) -> opens / expands
+  the panel and pins that item. While open, hover (Editor.setHoverCallback,
+  120 ms) shows what is under the mouse; leaving the code or entering the panel
+  goes back to the pinned item so its buttons can be pressed.
+- Header: ▾ collapse (or Esc / click header), ✕ close. Height via CSS var
+  --panel-h on :root (0 / 24 / 160 px); #main height subtracts it. A window
+  resize event redraws editors (Editor.refresh) and the gutter markers.
+- Layout: left = values (rows) + buttons, right = meaning, explain, wiki link.
+  Left column hides when empty. Columns stack under 700 px.
+- lookup(side, line, text, col) finds the token (DiffEngine.parseGCodeLine).
+- Tables: G, M, word letters, macro keywords, #variable ranges (Brother first,
+  Fanuc fallback). Brother #5221+ / #7001+ work offsets, #11000+n tool length,
+  #13000+n diameter (from the shop post notes), #3700 tool in spindle.
+- Values come from the last compare (App.getDiffContext), only when the line text still matches.
+- Values first (left) so experienced users are not slowed down.
+- GOTO / IF / M99 P (flowInfo): test, result, target line, runs next. Buttons:
+  Test TRUE / Test FALSE (only when the result is unknown or being tested),
+  Clear test, Jump to line. N labels (labelInfo): lines that jump here.
+- App.jumpTo(side, line, from): scroll, flash the line, show #jump-back for 15 s.
+  Ctrl/Cmd+click on a GOTO jumps (Editor.setCtrlClickCallback).
+- Each item links to a page on https://zappettiniconsulting.com/wiki/ (the author
+  is a contact of the shop; keep the links pointing at real pages).
+
+### Status bar (right side)
+
+- Control (Brother), Units per file from first G20/G21 (red when they differ,
+  "not in file" when neither file has one), "Files stay on this computer",
+  pane + Ln/Col of the cursor.
 
 ### Feeds & Speeds (`feeds.js`)
 
@@ -323,6 +394,34 @@ line-count mismatch warning (>10% difference), cursor position
 - Warnings: not in header list, listed never used, H/D on G100 line != T.
 - Red only when both sides have a value and it differs (numbers compared as numbers).
   One-sided value = dim. Fixture: same rule.
+
+## Future Ideas (to-do)
+
+Ideas from reviewing the Zappettini Macro Playground and wiki (Nov 2026).
+
+1. **Overlay backplot** — draw left and right toolpaths in 3D on top of each
+   other, differences in red. Rapids dashed, feeds solid. Dan has more ideas
+   for this — ask before designing it.
+2. **Variables, step 3 (hard)** — run loops (WHILE, backward GOTO), follow
+   G65 / M98 into subprograms, pass G65 arguments. Ask Zappettini about his
+   macro engine first.
+3. **Compare assignment lines by value** — `#1=2*3` vs `#1=6` is still a text change.
+4. **Welcome card** — short numbered "how to use" card on first open.
+5. **Light theme** — toggle for bright shop-floor screens.
+6. **Subprogram compare** — when a program calls `M98 P____`, open and compare
+   that subprogram file too.
+7. **Tolerance on variable words (look into)** — today `X#1` (#1 = 1.0) vs
+   `X1.0004` is red (critical), while the same change between plain numbers is
+   within tolerance. Decide whether axis / arc words with a known worked-out
+   value should go through applyToleranceClassification like plain numbers.
+   Safe as is, but noisier.
+8. **Control / machine profiles** — pick a profile (e.g. Brother Speedio M,
+   Brother R, Fanuc 0i, Haas, ...) that sets: G/M code meanings and wiki links
+   (hover-help.js tables), system variable map (#5221 / #7001 / tool offset
+   ranges), toolpath detection rules (G100, preamble codes, divider layout),
+   macro rules (MacroEval: which calls clear which variables), default units
+   and decimal rule. Status bar "Control:" shows the active profile. Today all
+   of this is hard-coded for Brother (see "Machine-Specific Settings" below).
 
 ## What Is NOT Built Yet
 
@@ -377,7 +476,9 @@ This list will grow — add new rules to classifyTokens only.
 | Comment content | critical | Comment text difference (after ignore rules), by role — see Comment roles |
 | Commented-out code | critical | (G0 Z1.) vs live G0 Z1.: paired (sameKind), field commentedOut + inner code diffs |
 | Macros | critical | Any # token or macro statement (IF/GOTO/...) difference; numbers compared as numbers (5. = 5.0) |
-| Expression words | critical | X[#101+1] / X#101 text difference |
+| Expression words | critical | X[#101+1] / X#101 text difference (unless the worked-out values match) |
+| Expression value | critical | Same expression text, different worked-out value (exprValue-X) |
+| Expression same value | minor | Different text, same known value: X#101 vs X1.5 with #101 = 1.5 (exprSame-X) |
 | Params / other words | critical | R/P/Q/L or unrecognized letter difference |
 | Arc R | coordinate (tolerance) | R value change when both lines are G2/G3 (canned cycle R stays critical) |
 | Block delete | critical | / on one side only (unless Ignore block delete) |
