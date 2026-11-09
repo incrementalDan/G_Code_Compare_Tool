@@ -410,6 +410,13 @@ Ideas from reviewing the Zappettini Macro Playground and wiki (Nov 2026).
 5. **Light theme** — toggle for bright shop-floor screens.
 6. **Subprogram compare** — when a program calls `M98 P____`, open and compare
    that subprogram file too.
+7. **Control / machine profiles** — pick a profile (e.g. Brother Speedio M,
+   Brother R, Fanuc 0i, Haas, ...) that sets: G/M code meanings and wiki links
+   (hover-help.js tables), system variable map (#5221 / #7001 / tool offset
+   ranges), toolpath detection rules (G100, preamble codes, divider layout),
+   macro rules (MacroEval: which calls clear which variables), default units
+   and decimal rule. Status bar "Control:" shows the active profile. Today all
+   of this is hard-coded for Brother (see "Machine-Specific Settings" below).
 
 ## What Is NOT Built Yet
 
