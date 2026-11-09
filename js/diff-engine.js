@@ -1075,8 +1075,11 @@ const DiffEngine = (() => {
     const movesB = Object.keys(parsedB.axes).length + Object.keys(parsedB.rotary).length + Object.keys(parsedB.arcParams).length > 0;
     const explicitMotionA = parsedA.gCodes.filter(isMotionCode).map(normCode).join(',');
     const explicitMotionB = parsedB.gCodes.filter(isMotionCode).map(normCode).join(',');
-    const motionA = modalA !== undefined ? (modalA || '') : explicitMotionA;
-    const motionB = modalB !== undefined ? (modalB || '') : explicitMotionB;
+    // Brother G100 does its own positioning: the mode carried in from the line
+    // before does not apply, so two G100 lines compare only their own G-codes.
+    const g100Both = isG100(parsedA) && isG100(parsedB);
+    const motionA = modalA !== undefined && !g100Both ? (modalA || '') : explicitMotionA;
+    const motionB = modalB !== undefined && !g100Both ? (modalB || '') : explicitMotionB;
     // Only matters when a line moves or sets the mode itself.
     if ((movesA || movesB || explicitMotionA || explicitMotionB) && motionA !== motionB) {
       tokenDiffs.push({ field: 'motion', severity: 'critical', leftVal: motionA, rightVal: motionB,
@@ -1353,6 +1356,16 @@ const DiffEngine = (() => {
     // should still hide its re-posted moves.
     return tokenDiffs.some(d => (d.severity === 'critical' || d.severity === 'workoffset') &&
       d.field !== 'motion' && !d.field.startsWith('axis-') && !d.field.startsWith('arc-'));
+  }
+
+  function isG100(p) {
+    return p.gCodes.some(g => codeNum(g) === 100);
+  }
+
+  /** Words written without a decimal point (X1, not X1.) that the control may read as 0.0001" / 0.001 mm. Zero is exempt. */
+  function noDecimalWords(p) {
+    return p.tokens.filter(t => t.noDecimal === true && t.value !== 0 &&
+      DECIMAL_LETTERS.includes(t.axis || t.param));
   }
 
   function hasWorkOffset(parsed) {
@@ -1945,18 +1958,21 @@ const DiffEngine = (() => {
   }
 
   /**
-   * modal is passed only for lines inside a matched toolpath: there an added
-   * or removed rapid (G0) move always shows, even when the toolpath is hidden.
+   * modal is passed only for lines inside a matched toolpath: there any added
+   * or removed move (rapid, feed, arc, cycle position) always shows, even when
+   * the toolpath is hidden. Whole added / removed toolpaths are not forced.
    */
   function oneSidedOp(type, idx, lines, parsed, rules, modal) {
     const op = type === 'added'
       ? { type, rightIdx: idx, rightLine: lines[idx] }
       : { type, leftIdx: idx, leftLine: lines[idx] };
     if (hasCriticalContent(parsed[idx], rules)) op.alwaysShow = true;
-    if (modal && modal[idx] === 'G0' &&
-        Object.keys(parsed[idx].axes).length + Object.keys(parsed[idx].rotary).length > 0) {
+    const p = parsed[idx];
+    const moves = Object.keys(p.axes).length + Object.keys(p.rotary).length + Object.keys(p.arcParams).length > 0;
+    if (modal && moves) {
       op.alwaysShow = true;
-      op.rapid = true;
+      if (modal[idx] === 'G0') op.rapid = true;
+      else op.move = true;
     }
     if (hasWorkOffset(parsed[idx])) op.workOffset = true;
     return op;
@@ -2054,6 +2070,7 @@ const DiffEngine = (() => {
     fingerprint,
     classifyTokens,
     hasCriticalContent,
+    noDecimalWords,
     segmentIntoSections,
     segmentIntoToolpaths,
     trackModalState,

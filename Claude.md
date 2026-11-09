@@ -163,11 +163,13 @@ Two post layouts. The new one is tried first (`segmentByDividers`):
 
 **One-sided lines** (`hasCriticalContent`): an added/removed line gets
 alwaysShow when it carries critical content (M, T/H/D, S, F, comment, macro,
-non-motion G, work offset, block delete, params). Plain moves do not.
+non-motion G, work offset, block delete, params). Plain moves do not count here (see One-sided moves).
 Lines with G54-G59 get workOffset = true.
 
-**One-sided rapids**: an added/removed G0 move inside a matched toolpath gets
-alwaysShow (oneSidedOp with modal). Whole added/removed toolpaths do not.
+**One-sided moves**: an added/removed move (any line with axis, rotary or I/J/K
+words: rapid, feed, arc, cycle position) inside a matched toolpath gets
+alwaysShow (oneSidedOp with modal; op.rapid for G0, op.move otherwise).
+Whole added/removed toolpaths do not.
 
 **Tolerance classification** (`applyToleranceClassification`):
 - Grades lines whose type is coordinate / coordinate-z by max delta:
@@ -364,6 +366,14 @@ line-count mismatch warning (>10% difference); right side: control, units, priva
 - Control (Brother), Units per file from first G20/G21 (red when they differ,
   "not in file" when neither file has one), "Files stay on this computer",
   pane + Ln/Col of the cursor.
+- No-decimal check (`#stat-decimal`): ON/OFF of decimalPointMatters + count of
+  lines with a non-zero X/Y/Z/A/B/C/I/J/K/R/Q word without a decimal
+  (DiffEngine.noDecimalWords). Amber when OFF and count > 0. Click steps through
+  them (jumpTo). Info only: does not change the compare. Keep
+  decimalPointMatters default OFF (Dan's choice).
+- Settings (`#stat-settings`): amber "Settings changed (n)" when any compare
+  setting or threshold differs from DEFAULT_SETTINGS (SETTING_LABELS in
+  app.js). Tooltip lists them. Click opens settings.
 
 ### Feeds & Speeds (`feeds.js`)
 
@@ -461,7 +471,7 @@ This list will grow — add new rules to classifyTokens only.
 | Work offset | workoffset (purple) | G54-G59 change in non-motion G-code set |
 | Work offset | workoffset (purple) | P (or P expression) change on a G54.1 line |
 | Offset data | workoffset (purple) | Any axis/param change on G10, G52, or G92-with-axes lines (no tolerance). G92 S Q = spindle clamp, not offset |
-| Motion mode | critical | Active G0/G1/G2/G3/canned mode differs (uses modal state) |
+| Motion mode | critical | Active G0/G1/G2/G3/canned mode differs (uses modal state). Two G100 lines compare explicit motion codes only (G100 positions itself) |
 | Non-motion G-codes | critical | Any other G-code set difference |
 | M-codes | critical | Any M-code set difference |
 | Tool / offset call | critical | T, H, or D value difference |

@@ -20,6 +20,25 @@ const App = (() => {
     showVarValues: true // show worked-out #variable values after macro lines
   };
 
+  // Factory defaults, used to warn when the saved settings differ
+  const DEFAULT_SETTINGS = { ...settings };
+  // Settings that change what the compare shows (display-only ones left out)
+  const SETTING_LABELS = {
+    ignoreParenComments: 'Ignore comments ( )',
+    ignoreSemiComments: 'Ignore comments ;',
+    ignoreWhitespace: 'Ignore whitespace',
+    ignoreCase: 'Ignore case',
+    normalizeGMCodes: 'Normalize G/M codes',
+    ignoreLineNumbers: 'Ignore N-numbers',
+    ignoreBlockDelete: 'Ignore block delete /',
+    decimalPointMatters: 'No decimal: X1 \u2260 X1.',
+    minorThreshold: 'Minor threshold',
+    majorThreshold: 'Major threshold'
+  };
+  // Lines with a word written without a decimal point: [{ side, line }]
+  let noDecimalLines = [];
+  let noDecimalIdx = -1;
+
   let currentDiff = [];
   let diffPositions = []; // indices into currentDiff that are actual diffs
   let currentDiffIndex = -1;
@@ -207,6 +226,8 @@ N120 M30`;
     document.getElementById('btn-next-diff').addEventListener('click', () => navigateDiff(1));
 
     document.getElementById('settings-toggle').addEventListener('click', toggleSettings);
+    document.getElementById('stat-settings').addEventListener('click', toggleSettings);
+    document.getElementById('stat-decimal').addEventListener('click', nextNoDecimal);
 
     // Clickable diff gutter — jump both editors to the diff nearest the click
     document.getElementById('diff-markers').addEventListener('click', (e) => {
@@ -866,6 +887,9 @@ N120 M30`;
         : 'No G20 / G21 in the files: the machine uses its own default units';
     }
 
+    updateSettingsIndicator();
+    updateDecimalIndicator(leftLines, rightLines);
+
     // Line count warning
     const center = document.getElementById('status-center');
     if (leftLines > 0 && rightLines > 0) {
@@ -878,6 +902,64 @@ N120 M30`;
     } else {
       center.textContent = '';
     }
+  }
+
+  /** Status bar: shows when any compare setting is not the factory default. */
+  function updateSettingsIndicator() {
+    const el = document.getElementById('stat-settings');
+    if (!el) return;
+    const fmt = v => typeof v === 'boolean' ? (v ? 'ON' : 'OFF') : String(v);
+    const changed = Object.keys(SETTING_LABELS).filter(k => settings[k] !== DEFAULT_SETTINGS[k]);
+    el.classList.toggle('status-warn', changed.length > 0);
+    el.textContent = changed.length ? `\u26A0 Settings changed (${changed.length})` : 'Settings: default';
+    el.title = changed.length
+      ? 'Not the default settings:\n' + changed.map(k =>
+          `\u2022 ${SETTING_LABELS[k]}: ${fmt(settings[k])} (default ${fmt(DEFAULT_SETTINGS[k])})`).join('\n') +
+        '\nClick to open settings.'
+      : 'All compare settings are at their defaults. Click to open settings.';
+  }
+
+  /**
+   * Status bar: is the no-decimal check on, and how many lines have a word
+   * like X1 (no decimal point). Counted either way; the compare is unchanged.
+   */
+  function updateDecimalIndicator(leftLines, rightLines) {
+    const el = document.getElementById('stat-decimal');
+    if (!el) return;
+    noDecimalLines = [];
+    const words = { left: new Set(), right: new Set() };
+    if (lastDiffResult) {
+      for (const side of ['left', 'right']) {
+        const parsed = side === 'left' ? lastDiffResult.leftParsed : lastDiffResult.rightParsed;
+        if (!(side === 'left' ? leftLines : rightLines) || !parsed) continue;
+        parsed.forEach((p, line) => {
+          const w = DiffEngine.noDecimalWords(p);
+          if (w.length) { noDecimalLines.push({ side, line }); w.forEach(t => words[side].add(t.text.trim())); }
+        });
+      }
+    }
+    noDecimalIdx = -1;
+    const on = settings.decimalPointMatters;
+    const n = noDecimalLines.length;
+    el.textContent = `No-decimal check: ${on ? 'ON' : 'OFF'}` + (n ? ` \u00B7 ${n} line${n === 1 ? '' : 's'}` : '');
+    el.classList.toggle('status-warn', n > 0 && !on);
+    const nL = noDecimalLines.filter(x => x.side === 'left').length;
+    const sample = side => [...words[side]].slice(0, 6).join(' ');
+    el.title = (on
+      ? 'ON: X1 vs X1. is flagged critical (the control may read X1 as 0.0001" / 0.001 mm).'
+      : 'OFF: X1 and X1. compare as the same number. Turn on in settings if your control reads X1 as 0.0001" / 0.001 mm.') +
+      (n ? `\nLines with a word without a decimal point: left ${nL}, right ${n - nL}.` +
+           (words.left.size ? `\nLeft: ${sample('left')}` : '') +
+           (words.right.size ? `\nRight: ${sample('right')}` : '') +
+           '\nClick to step through them.'
+         : '\nNo words without a decimal point found (zero is not counted).');
+  }
+
+  function nextNoDecimal() {
+    if (!noDecimalLines.length) { toggleSettings(); return; }
+    noDecimalIdx = (noDecimalIdx + 1) % noDecimalLines.length;
+    const { side, line } = noDecimalLines[noDecimalIdx];
+    jumpTo(side, line);
   }
 
   // === Navigation ===
