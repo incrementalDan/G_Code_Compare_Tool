@@ -80,9 +80,9 @@ test('added M-code line must show through', () => {
   const op = diff(['G0 X1.'], ['G0 X1.', 'M0']).ops.find(o => o.type === 'added');
   eq(op.alwaysShow, true);
 });
-test('added plain move does not force show-through', () => {
+test('added plain move forces show-through', () => {
   const op = diff(['G1 X1. F10.'], ['G1 X1. F10.', 'X2.']).ops.find(o => o.type === 'added');
-  eq(!!op.alwaysShow, false);
+  eq(!!op.alwaysShow, true);
 });
 test('added work offset line flagged', () => {
   const op = diff(['G0 X1.'], ['G0 X1.', 'G55']).ops.find(o => o.type === 'added');
@@ -305,10 +305,83 @@ test('added rapid always shows', () => {
   const op = diff(['G1 X0. F10.', 'G1 X1.'], ['G1 X0. F10.', 'G0 Z-1.', 'G1 X1.']).ops.find(o => o.type === 'added');
   eq(!!op.alwaysShow, true);
 });
-test('added plain feed move does not always show', () => {
+test('added feed move always shows', () => {
   const op = diff(['G1 X0. F10.', 'G1 X2.'], ['G1 X0. F10.', 'G1 X1.', 'G1 X2.']).ops.find(o => o.type === 'added');
+  eq(!!op.alwaysShow, true);
+});
+test('removed feed move always shows', () => {
+  const op = diff(['G1 Z-.5 F20.', 'G1 X1.', 'G1 X2.', 'G1 X3.'], ['G1 Z-.5 F20.', 'G1 X1.', 'G1 X3.']).ops.find(o => o.type === 'removed');
+  eq(!!op.alwaysShow, true);
+});
+test('removed arc always shows', () => {
+  const op = diff(['G1 X0. F10.', 'G2 X1. Y1. I1. J0.', 'G1 X2.'], ['G1 X0. F10.', 'G1 X2.']).ops.find(o => o.type === 'removed');
+  eq(!!op.alwaysShow, true);
+});
+test('whole added toolpath moves are not forced to show', () => {
+  const tp = (n, t) => ['', '(----------)', '(J - T' + t + ')', '(' + n + ')', '(POCKET)', 'G100 T' + t + ' X0. Y0. Z1. S1000 M3', 'G1 Z-.1 F10.', 'G1 X1.', 'G0 Z1.'];
+  const L = ['%', 'O1'].concat(tp('A', 1), ['M30']);
+  const R = ['%', 'O1'].concat(tp('A', 1), tp('B', 2), ['M30']);
+  const op = diff(L, R).ops.find(o => o.type === 'added' && o.rightLine === 'G1 X1.');
   eq(!!op.alwaysShow, false);
 });
+
+console.log('\nArc R vs I/J/K, rotary rollover, moved toolpaths');
+const fieldOf = (L, R, i) => { const o = diff(L, R).ops.find(x => x.leftIdx === i); return o.type + ':' + (o.tokenDiffs || []).map(d => d.field).join(','); };
+test('same small arc as R vs IJ = within tolerance', () =>
+  eq(fieldOf(['G1 X0. Y0. F10.', 'G2 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R1.'], 1), 'tolerance:arcFormat'));
+test('R sign picks other side = critical', () =>
+  eq(fieldOf(['G1 X0. Y0. F10.', 'G2 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R-1.'], 1), 'critical:arcFormat'));
+test('big arc (>180) with R- = within tolerance', () =>
+  // G3 CCW from (0,0) to (1,1) around (1,0): 270 deg
+  eq(fieldOf(['G1 X0. Y0. F10.', 'G3 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G3 X1. Y1. R-1.'], 1), 'tolerance:arcFormat'));
+test('radius off by .02 = critical', () =>
+  eq(fieldOf(['G1 X0. Y0. F10.', 'G2 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R1.02'], 1), 'critical:arcFormat'));
+test('unknown start point = critical', () =>
+  eq(fieldOf(['G2 X1. Y1. I1. J0. F10.'], ['G2 X1. Y1. R1. F10.'], 0), 'critical:arcFormat'));
+test('G18 arc uses X/Z with I/K', () =>
+  eq(fieldOf(['G18', 'G1 X0. Z0. F10.', 'G2 X1. Z1. I1. K0.'], ['G18', 'G1 X0. Z0. F10.', 'G2 X1. Z1. R1.'], 2).split(':')[1], 'arcFormat'));
+test('arc note says same arc', () => {
+  const o = diff(['G1 X0. Y0. F10.', 'G2 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R1.']).ops[1];
+  eq(/same arc/.test(o.tokenDiffs[0].note), true);
+});
+test('rotary one turn apart = critical with note', () => {
+  const o = diff(['G0 A359.999'], ['G0 A-0.001']).ops[0];
+  eq(o.type + ':' + o.tokenDiffs[0].field + ':' + /rollover/.test(o.tokenDiffs[0].note), 'critical:rotaryWrap-A:true');
+});
+test('rotary normal change has no rollover note', () => {
+  const o = diff(['G0 A10.'], ['G0 A20.']).ops[0];
+  eq(o.tokenDiffs[0].field, 'axis-A');
+});
+const mtp = (n, t, cut) => ['', '(----------)', '(J - T' + t + ')', '(' + n + ')', '(POCKET)', 'G100 T' + t + ' X0. Y0. Z1. S1000 M3', 'G1 Z' + cut + ' F10.', 'G1 X1.', 'G0 Z1.'];
+test('swapped toolpaths are tagged as moved, same code', () => {
+  const r = diff(['%', 'O1'].concat(mtp('A', 1, '-.1'), mtp('B', 2, '-.2'), ['M30']), ['%', 'O1'].concat(mtp('B', 2, '-.2'), mtp('A', 1, '-.1'), ['M30']));
+  const moved = r.leftToolpaths.filter(t => t.movedPeer);
+  eq(moved.length + ':' + moved[0].movedDiffs, '1:0');
+});
+test('moved toolpath with changed code counts the diffs', () => {
+  const r = diff(['%', 'O1'].concat(mtp('A', 1, '-.1'), mtp('B', 2, '-.2'), ['M30']), ['%', 'O1'].concat(mtp('B', 2, '-.4'), mtp('A', 1, '-.3'), ['M30']));
+  const moved = r.leftToolpaths.find(t => t.movedPeer);
+  eq(moved.movedDiffs, 1);
+});
+
+console.log('\nG100 and no-decimal');
+test('identical G100 after different motion mode = equal', () => {
+  const tp = (n, t, last) => ['', '(----------)', '(J - T' + t + ')', '(' + n + ')', '(POCKET)', 'G100 T' + t + ' X0. Y0. Z1. S1000 M3', 'G1 Z-.1 F10.', last];
+  const a = tp('A', 1, 'G0 Z1.'), b = tp('B', 2, 'G81 Z-1. R.1 F10.'), c = tp('C', 3, 'G0 Z1.');
+  const ops = diff(['%', 'O1'].concat(a, c, ['M30']), ['%', 'O1'].concat(b, c, ['M30'])).ops;
+  const g = ops.find(o => o.leftLine === 'G100 T3 X0. Y0. Z1. S1000 M3');
+  eq(g.type, 'equal');
+});
+test('G100 with different explicit motion still critical', () =>
+  eq(opAt(['G1 X1. F10.', 'G100 T1 X0. Y0. S1000 M3'], ['G1 X1. F10.', 'G100 T1 G0 X0. Y0. S1000 M3'], 1), 'critical'));
+test('G43 Z under G1 vs G0 still critical', () =>
+  eq(opAt(['G0 X0.', 'G43 H1 Z1.'], ['G1 X0. F10.', 'G43 H1 Z1.'], 1), 'critical'));
+test('no-decimal finder: X1 found, X1. and X0 not', () => {
+  const w = p => DE.noDecimalWords(DE.parseGCodeLine(p)).map(t => t.text).join(',');
+  eq(w('G1 X1 Y2. Z0 F50'), 'X1');
+});
+test('X1 vs X1. still equal with setting off (unchanged)', () =>
+  eq(opAt(['G1 X1 F10.'], ['G1 X1. F10.'], 0), 'equal'));
 test('M05 / M09 lines join the next toolpath (old layout)', () => {
   const lines = ['%', 'O1000', 'G90', '', '(J - T1)', '(OP1)', 'G100 T1 X0. Y0. S1000 M3', 'G1 X1. F10.',
     'M09', 'M05', '', '(J - T2)', '(OP2)', 'G100 T2 X0. Y0. S1000 M3', 'G1 X2. F10.', 'M30'];

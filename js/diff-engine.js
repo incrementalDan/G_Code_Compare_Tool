@@ -293,6 +293,8 @@ const DiffEngine = (() => {
     const pos = {};
     for (const L of POS_LETTERS) pos[L] = new Float64Array(n);
     const feed = new Float64Array(n);
+    const plane = new Uint8Array(n);
+    let curPlane = 17;
     const cur = {};
     for (const L of POS_LETTERS) cur[L] = NaN;
     let curF = NaN, incremental = false, inverseTime = false;
@@ -303,6 +305,8 @@ const DiffEngine = (() => {
       feed[i] = curF;
 
       const nums = p.gCodes.map(codeNum);
+      for (const g of nums) if (g === 17 || g === 18 || g === 19) curPlane = g;
+      plane[i] = curPlane;
       if (nums.includes(91)) incremental = true;
       if (nums.includes(90)) incremental = false;
       if (nums.includes(93)) inverseTime = true;
@@ -324,7 +328,7 @@ const DiffEngine = (() => {
       if (inverseTime || p.exprs.F !== undefined) curF = NaN;
       else if (p.feed !== null) curF = p.feed;
     }
-    return { inc, pos, feed };
+    return { inc, pos, feed, plane };
   }
 
   /** Context object for one line, as classifyTokens expects it. */
@@ -333,7 +337,7 @@ const DiffEngine = (() => {
     const prev = {};
     for (const L of POS_LETTERS) prev[L] = track.pos[L][i];
     prev.F = track.feed[i];
-    return { inc: track.inc[i] === 1, prev };
+    return { inc: track.inc[i] === 1, prev, plane: track.plane ? track.plane[i] : 17 };
   }
 
   // =====================================================
@@ -1075,8 +1079,11 @@ const DiffEngine = (() => {
     const movesB = Object.keys(parsedB.axes).length + Object.keys(parsedB.rotary).length + Object.keys(parsedB.arcParams).length > 0;
     const explicitMotionA = parsedA.gCodes.filter(isMotionCode).map(normCode).join(',');
     const explicitMotionB = parsedB.gCodes.filter(isMotionCode).map(normCode).join(',');
-    const motionA = modalA !== undefined ? (modalA || '') : explicitMotionA;
-    const motionB = modalB !== undefined ? (modalB || '') : explicitMotionB;
+    // Brother G100 does its own positioning: the mode carried in from the line
+    // before does not apply, so two G100 lines compare only their own G-codes.
+    const g100Both = isG100(parsedA) && isG100(parsedB);
+    const motionA = modalA !== undefined && !g100Both ? (modalA || '') : explicitMotionA;
+    const motionB = modalB !== undefined && !g100Both ? (modalB || '') : explicitMotionB;
     // Only matters when a line moves or sets the mode itself.
     if ((movesA || movesB || explicitMotionA || explicitMotionB) && motionA !== motionB) {
       tokenDiffs.push({ field: 'motion', severity: 'critical', leftVal: motionA, rightVal: motionB,
@@ -1128,6 +1135,10 @@ const DiffEngine = (() => {
       compareField(parsedA, parsedB, 'feed', 'critical', tokenDiffs);
     }
 
+    // --- Same arc written as R on one side and I/J/K on the other ---
+    const arcFmt = (!offsetLine && !incremental) ? arcFormatDiff(parsedA, parsedB, motionA, motionB, ctxA, ctxB) : null;
+    if (arcFmt) tokenDiffs.push(arcFmt);
+
     // --- Axes. Value change -> graded by tolerance. Missing on one side -> critical. ---
     for (const axis of ['X', 'Y', 'Z', 'A', 'B', 'C']) {
       if (exprLetters.has(axis)) continue;
@@ -1147,7 +1158,17 @@ const DiffEngine = (() => {
         if (offsetLine) sev = 'workoffset';
         else if (incremental) sev = 'critical';
         const delta = missing ? null : Math.abs(va - vb);
-        tokenDiffs.push({ field: 'axis-' + axis, severity: sev,
+        // Rotary: same angle one full turn apart (A359.999 vs A-0.001). Still red:
+        // with rollover off the table turns the long way, but say why.
+        let note;
+        if (!missing && tType === 'rotary' && !offsetLine) {
+          const wrap = Math.abs(((va - vb) % 360 + 540) % 360 - 180);
+          if (delta >= 180 && wrap < 0.01) {
+            sev = 'critical';
+            note = axis + ' same angle \u00B1360\u00B0: check rollover / turn direction';
+          }
+        }
+        tokenDiffs.push({ field: note ? 'rotaryWrap-' + axis : 'axis-' + axis, severity: sev, note,
           leftVal: va, rightVal: vb, delta, incremental: incremental && !offsetLine && !missing,
           leftTokens: parsedA.tokens.filter(t => (t.type === tType) && t.axis === axis),
           rightTokens: parsedB.tokens.filter(t => (t.type === tType) && t.axis === axis) });
@@ -1156,7 +1177,7 @@ const DiffEngine = (() => {
 
     // --- Arc params ---
     for (const p of ['I', 'J', 'K']) {
-      if (exprLetters.has(p)) continue;
+      if (exprLetters.has(p) || arcFmt) continue;
       const va = parsedA.arcParams[p] ?? null;
       const vb = parsedB.arcParams[p] ?? null;
       if (va === null && vb === null) continue;
@@ -1218,6 +1239,7 @@ const DiffEngine = (() => {
       const keys = new Set([...Object.keys(mapA), ...Object.keys(mapB)]);
       for (const k of keys) {
         if (exprLetters.has(k)) continue;
+        if (arcFmt && k === 'R') continue;
         const va = mapA[k], vb = mapB[k];
         if (va === undefined || vb === undefined || Math.abs(va - vb) > FP_EPS) {
           const wo = (extWO && k === 'P') || (offsetLine && ttype === 'param');
@@ -1353,6 +1375,71 @@ const DiffEngine = (() => {
     // should still hide its re-posted moves.
     return tokenDiffs.some(d => (d.severity === 'critical' || d.severity === 'workoffset') &&
       d.field !== 'motion' && !d.field.startsWith('axis-') && !d.field.startsWith('arc-'));
+  }
+
+  // Arc plane: [first axis, second axis, first offset, second offset].
+  // Order keeps CW / CCW right when looking down the third axis.
+  const ARC_PLANES = { 17: ['X', 'Y', 'I', 'J'], 18: ['Z', 'X', 'K', 'I'], 19: ['Y', 'Z', 'J', 'K'] };
+
+  /**
+   * One line is an arc with R, the other the same arc with I/J/K (post setting
+   * change). Compares the radius (graded by tolerance) and that R's sign picks
+   * the same side (R- = more than 180 deg). Returns a token diff or null when
+   * this is not an R vs I/J/K pair.
+   */
+  function arcFormatDiff(pA, pB, motionA, motionB, ctxA, ctxB) {
+    const ARC = new Set(['G2', 'G3']);
+    const mA = normCode(motionA || ''), mB = normCode(motionB || '');
+    if (!ARC.has(mA) || mA !== mB) return null;
+    const rOf = p => { const t = p.tokens.find(x => x.type === 'param' && x.param === 'R'); return t ? t.value : null; };
+    const hasIJK = p => Object.keys(p.arcParams).length > 0;
+    if (Object.keys(pA.exprs).length || Object.keys(pB.exprs).length) return null;
+    let rSide, kSide, ctx;
+    if (rOf(pA) !== null && !hasIJK(pA) && rOf(pB) === null && hasIJK(pB)) { rSide = pA; kSide = pB; ctx = ctxB; }
+    else if (rOf(pB) !== null && !hasIJK(pB) && rOf(pA) === null && hasIJK(pA)) { rSide = pB; kSide = pA; ctx = ctxA; }
+    else return null;
+    const planeNo = ctx && ctx.plane ? ctx.plane : 17;
+    if (ctxA && ctxB && ctxA.plane !== ctxB.plane) return null;
+    const [u, v, ou, ov] = ARC_PLANES[planeNo] || ARC_PLANES[17];
+    const offU = kSide.arcParams[ou] || 0, offV = kSide.arcParams[ov] || 0;
+    const R = rOf(rSide);
+    const radius = Math.hypot(offU, offV);
+    const delta = Math.abs(radius - Math.abs(R));
+    const toks = p => p.tokens.filter(t => (t.type === 'arcParam') || (t.type === 'param' && t.param === 'R'));
+    const base = { leftVal: pA === rSide ? 'R' + R : 'IJK r' + radius.toFixed(4),
+      rightVal: pB === rSide ? 'R' + R : 'IJK r' + radius.toFixed(4),
+      leftTokens: toks(pA), rightTokens: toks(pB) };
+    // Which side of 180 deg does the I/J/K arc take? Needs the start point.
+    const su = ctx && ctx.prev ? ctx.prev[u] : NaN, sv = ctx && ctx.prev ? ctx.prev[v] : NaN;
+    if (Number.isNaN(su) || Number.isNaN(sv) || su === undefined || sv === undefined) {
+      return { field: 'arcFormat', severity: 'critical', ...base,
+        note: 'arc R vs I/J/K: start point unknown, cannot confirm same arc' };
+    }
+    const eu = kSide.axes[u] ?? su, ev = kSide.axes[v] ?? sv;
+    const cu = su + offU, cv = sv + offV;
+    const as = Math.atan2(sv - cv, su - cu), ae = Math.atan2(ev - cv, eu - cu);
+    const TAU = 2 * Math.PI;
+    let sweep = mA === 'G3' ? (ae - as) : (as - ae);
+    sweep = ((sweep % TAU) + TAU) % TAU;
+    const full = sweep < 1e-9;
+    const big = sweep > Math.PI + 1e-6, small = sweep < Math.PI - 1e-6;
+    if (full || (R < 0 && small) || (R > 0 && big)) {
+      return { field: 'arcFormat', severity: 'critical', ...base,
+        note: full ? 'arc R vs I/J/K: I/J/K is a full circle, R cannot do that'
+          : 'arc R vs I/J/K: R sign picks the other side of 180\u00B0 (different arc)' };
+    }
+    return { field: 'arcFormat', severity: 'coordinate', delta, ...base,
+      note: 'arc written as R vs I/J/K: same arc' + (delta >= 0.00005 ? ' (radius \u0394' + delta.toFixed(4) + ')' : '') };
+  }
+
+  function isG100(p) {
+    return p.gCodes.some(g => codeNum(g) === 100);
+  }
+
+  /** Words written without a decimal point (X1, not X1.) that the control may read as 0.0001" / 0.001 mm. Zero is exempt. */
+  function noDecimalWords(p) {
+    return p.tokens.filter(t => t.noDecimal === true && t.value !== 0 &&
+      DECIMAL_LETTERS.includes(t.axis || t.param));
   }
 
   function hasWorkOffset(parsed) {
@@ -1801,9 +1888,16 @@ const DiffEngine = (() => {
 
     const keep = longestIncreasing(pairs.map(p => p.ri));
     const kept = [];
+    for (const tp of leftTPs) delete tp.movedPeer;
+    for (const tp of rightTPs) delete tp.movedPeer;
     pairs.forEach((p, idx) => {
       if (keep.has(idx)) kept.push(p);
-      else { unmatchedLeft.add(p.li); unmatchedRight.add(p.ri); }
+      else {
+        // Order changed: shown as removed + added, but remember the pair
+        unmatchedLeft.add(p.li); unmatchedRight.add(p.ri);
+        p.m.left.movedPeer = p.m.right;
+        p.m.right.movedPeer = p.m.left;
+      }
     });
 
     // Walk both files together; unmatched toolpaths go just before the next
@@ -1863,8 +1957,7 @@ const DiffEngine = (() => {
 
     const allOps = [];
 
-    for (const match of tpMatches) {
-      if (match.left && match.right) {
+    const diffPair = (match) => {
         // Build fingerprints for this segment only
         const segLeftFP = [], segLeftKey = [], segLeftIdxMap = [];
         for (let i = match.left.startLine; i <= match.left.endLine; i++) {
@@ -1881,16 +1974,28 @@ const DiffEngine = (() => {
           segRightIdxMap.push(i);
         }
 
-        if (segLeftFP.length === 0 && segRightFP.length === 0) continue;
+        if (segLeftFP.length === 0 && segRightFP.length === 0) return [];
 
         const rawOps = alignLines(segLeftFP, segRightFP, segLeftKey, segRightKey);
 
         // classifyOps — index maps already point to real line indices
-        const segOps = classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed,
+        return classifyOps(rawOps, leftLines, leftParsed, rightLines, rightParsed,
                                     segLeftIdxMap, segRightIdxMap, rules, leftModal, rightModal,
                                     leftTrack, rightTrack);
-        allOps.push(...segOps);
+    };
 
+    // Toolpaths whose order changed: compare their code too (info for the label)
+    for (const tp of leftToolpaths) {
+      if (!tp.movedPeer) continue;
+      const ops = diffPair({ left: tp, right: tp.movedPeer });
+      applyToleranceClassification(ops, minorThreshold, majorThreshold);
+      const n = ops.filter(o => o.type !== 'equal' && o.type !== 'tolerance').length;
+      tp.movedDiffs = n; tp.movedPeer.movedDiffs = n;
+    }
+
+    for (const match of tpMatches) {
+      if (match.left && match.right) {
+        allOps.push(...diffPair(match));
       } else if (match.left) {
         // Entire toolpath removed
         for (let i = match.left.startLine; i <= match.left.endLine; i++) {
@@ -1945,18 +2050,21 @@ const DiffEngine = (() => {
   }
 
   /**
-   * modal is passed only for lines inside a matched toolpath: there an added
-   * or removed rapid (G0) move always shows, even when the toolpath is hidden.
+   * modal is passed only for lines inside a matched toolpath: there any added
+   * or removed move (rapid, feed, arc, cycle position) always shows, even when
+   * the toolpath is hidden. Whole added / removed toolpaths are not forced.
    */
   function oneSidedOp(type, idx, lines, parsed, rules, modal) {
     const op = type === 'added'
       ? { type, rightIdx: idx, rightLine: lines[idx] }
       : { type, leftIdx: idx, leftLine: lines[idx] };
     if (hasCriticalContent(parsed[idx], rules)) op.alwaysShow = true;
-    if (modal && modal[idx] === 'G0' &&
-        Object.keys(parsed[idx].axes).length + Object.keys(parsed[idx].rotary).length > 0) {
+    const p = parsed[idx];
+    const moves = Object.keys(p.axes).length + Object.keys(p.rotary).length + Object.keys(p.arcParams).length > 0;
+    if (modal && moves) {
       op.alwaysShow = true;
-      op.rapid = true;
+      if (modal[idx] === 'G0') op.rapid = true;
+      else op.move = true;
     }
     if (hasWorkOffset(parsed[idx])) op.workOffset = true;
     return op;
@@ -2054,6 +2162,7 @@ const DiffEngine = (() => {
     fingerprint,
     classifyTokens,
     hasCriticalContent,
+    noDecimalWords,
     segmentIntoSections,
     segmentIntoToolpaths,
     trackModalState,

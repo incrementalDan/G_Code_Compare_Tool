@@ -104,7 +104,7 @@
         <input type="checkbox" id="opt-ignore-block-delete">
       </div>
       <div class="setting-row" title="Turn on if your control reads X1 as the smallest increment (0.0001&quot; / 0.001 mm) instead of 1.">
-        <label for="opt-decimal-point-matters">No decimal: X1 ≠ X1.</label>
+        <label for="opt-decimal-point-matters">No decimal: X1 ≠ X1. <span class="setting-hint">(status bar counts lines without a decimal either way)</span></label>
         <input type="checkbox" id="opt-decimal-point-matters">
       </div>
     </div>
@@ -170,6 +170,8 @@
     <div id="status-right">
       <span title="Controller the rules are set up for">Control: Brother</span>
       <span>Units: <span id="stat-units">–</span></span>
+      <span id="stat-decimal" class="status-click" title="">No-decimal check: OFF</span>
+      <span id="stat-settings" class="status-click" title="Click to open settings">Settings: default</span>
       <span class="status-private" title="Nothing is uploaded. Files are read and compared inside this browser.">&#128274; Files stay on this computer</span>
       <span id="stat-cursor">Ln 1, Col 1</span>
     </div>

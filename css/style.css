@@ -150,6 +150,8 @@ html, body {
   text-overflow: ellipsis;
   color: #6a9955;
 }
+.tp-moved { color: #ffaa33; font-weight: 700; margin-left: 8px; }
+
 .tp-not-in-file {
   color: #888;
   font-style: italic;
@@ -762,6 +764,10 @@ html, body {
 
 .status-units-differ { color: #ff5252; font-weight: 700; }
 .status-private { color: #7cb87c; }
+.status-click { cursor: pointer; }
+.status-click:hover { text-decoration: underline; }
+.status-warn { color: #ffaa33; font-weight: 700; }
+.setting-hint { color: var(--text-dim); font-size: 10px; }
 
 /* ===== Variable values after macro lines (e.g. "→ X1.5") ===== */
 .var-ghost {

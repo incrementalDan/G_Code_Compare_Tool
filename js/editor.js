@@ -330,10 +330,12 @@ const Editor = (() => {
   function buildLabelHtml(sep, isPlaceholder) {
     const parts = sep.labelParts;
     if (parts) {
-      const placeholderSuffix = isPlaceholder ? ' <span class="tp-not-in-file">(not in file)</span>' : '';
+      const placeholderSuffix = isPlaceholder
+        ? ` <span class="tp-not-in-file">(${parts.note ? 'moved' : 'not in file'})</span>` : '';
+      const note = parts.note ? ` <span class="tp-moved">${escapeHtml(parts.note)}</span>` : '';
       return `<span class="tp-n-num">${escapeHtml(parts.nNumber)}</span>` +
         `<span class="tp-tool">${escapeHtml(parts.tool)}</span>` +
-        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}</span>`;
+        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}${note}</span>`;
     }
     return `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>`;
   }
