@@ -381,6 +381,13 @@ const DiffEngine = (() => {
     return p._cc;
   }
 
+  /** Tool number of a tool list comment like "(T02 - 1/8 CHAMFER ...)", else null. */
+  function toolCommentNum(p) {
+    if (!p.isCommentOnly) return null;
+    const m = (p.comment || '').trim().match(/^T(\d+)\s*-/i);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
   function commentRole(p, rules) {
     if (!p.isCommentOnly) return 'note';
     if (commentedCode(p, rules)) return 'code';
@@ -1957,17 +1964,32 @@ const DiffEngine = (() => {
 
     const allOps = [];
 
+    // Diff ranges run from header to header (anchor line), not from the
+    // expanded preamble start. Posts put setup lines on different sides of
+    // the header, so this keeps the same lines in the same compared range.
+    const setRanges = (tps, count) => {
+      const starts = tps.map(t => (t.anchorLine >= 0 ? t.anchorLine : t.startLine));
+      for (let k = 0; k < tps.length; k++) {
+        const s = k === 0 ? tps[0].startLine : starts[k];
+        let e = k + 1 < tps.length ? starts[k + 1] - 1 : count - 1;
+        tps[k].diffStart = s;
+        tps[k].diffEnd = Math.max(s - 1, e);
+      }
+    };
+    setRanges(leftToolpaths, leftLines.length);
+    setRanges(rightToolpaths, rightLines.length);
+
     const diffPair = (match) => {
         // Build fingerprints for this segment only
         const segLeftFP = [], segLeftKey = [], segLeftIdxMap = [];
-        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
+        for (let i = match.left.diffStart; i <= match.left.diffEnd; i++) {
           if (leftParsed[i].isBlank) continue;
           segLeftFP.push(fingerprint(leftParsed[i], rules, leftModal[i]));
           segLeftKey.push(lineKey(leftParsed[i]));
           segLeftIdxMap.push(i);
         }
         const segRightFP = [], segRightKey = [], segRightIdxMap = [];
-        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
+        for (let i = match.right.diffStart; i <= match.right.diffEnd; i++) {
           if (rightParsed[i].isBlank) continue;
           segRightFP.push(fingerprint(rightParsed[i], rules, rightModal[i]));
           segRightKey.push(lineKey(rightParsed[i]));
@@ -1998,13 +2020,13 @@ const DiffEngine = (() => {
         allOps.push(...diffPair(match));
       } else if (match.left) {
         // Entire toolpath removed
-        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
+        for (let i = match.left.diffStart; i <= match.left.diffEnd; i++) {
           if (leftParsed[i].isBlank) continue;
           allOps.push(oneSidedOp('removed', i, leftLines, leftParsed, rules));
         }
       } else {
         // Entire toolpath added
-        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
+        for (let i = match.right.diffStart; i <= match.right.diffEnd; i++) {
           if (rightParsed[i].isBlank) continue;
           allOps.push(oneSidedOp('added', i, rightLines, rightParsed, rules));
         }
@@ -2041,6 +2063,11 @@ const DiffEngine = (() => {
     if (cb && !pa.isCommentOnly) return sameKind(pa, cb, rules);
     // A fixture line only pairs with a fixture line
     if (isFixtureComment(pa) !== isFixtureComment(pb)) return false;
+    // A tool list line only pairs with the same tool (T02 with T02)
+    const ta = toolCommentNum(pa), tb = toolCommentNum(pb);
+    if (ta !== null || tb !== null) return ta === tb;
+    // A (-----) divider only pairs with a divider
+    if (isDivider(pa) !== isDivider(pb)) return false;
     if (pa.isCommentOnly && pb.isCommentOnly) return true;
     const a = wordLetters(pa), b = wordLetters(pb);
     if (a.size === 0 || b.size === 0) return false;
@@ -2167,8 +2194,13 @@ const DiffEngine = (() => {
    * sides is used if it fits between them. A point that goes backwards on
    * either side, or crosses a header, is skipped.
    *
-   * Returns { left: {line: rows}, right: {line: rows} }. Padding at a line
-   * is drawn above that line's header bar; key lineCount = trailing padding.
+   * A line pair may share its line with a header just lined up (e.g. the
+   * old post's first label line vs the new post's line after its divider);
+   * then the gap goes just below that header bar.
+   *
+   * Returns { left, right, leftBelowSep, rightBelowSep } as {line: rows}.
+   * left/right padding is drawn above the line's header bar (key lineCount =
+   * trailing padding); *BelowSep padding is drawn just below it.
    */
   function alignRows(ops, leftCount, rightCount, leftSeps, rightSeps, headerPoints) {
     const byLeft = (a, b) => a[0] - b[0] || a[1] - b[1];
@@ -2190,41 +2222,54 @@ const DiffEngine = (() => {
     // Merge: line pairs must sit strictly between the headers around them
     const points = [];
     let last = [-1, -1];
+    let lastIsHeader = false;
     let hi = 0;
     for (const p of pairs) {
       if (!inRange(p)) continue;
       while (hi < headers.length && headers[hi][0] <= p[0]) {
         points.push(headers[hi]);
         last = headers[hi++];
+        lastIsHeader = true;
       }
       const next = headers[hi];
-      if (p[0] > last[0] && p[1] > last[1] && (!next || (p[0] < next[0] && p[1] < next[1]))) {
+      const forward = (p[0] > last[0] && p[1] > last[1]) ||
+        (lastIsHeader && ((p[0] === last[0] && p[1] > last[1]) || (p[1] === last[1] && p[0] > last[0])));
+      if (forward && (!next || (p[0] < next[0] && p[1] < next[1]))) {
         points.push(p);
         last = p;
+        lastIsHeader = false;
       }
     }
     while (hi < headers.length) points.push(headers[hi++]);
 
-    const side = (count, seps) => ({ count, seps: seps || {}, pad: {}, cur: 0, row: 0 });
+    const side = (count, seps) => ({ count, seps: seps || {}, pad: {}, below: {}, cur: 0, row: 0, headerAt: -1 });
     const L = side(leftCount, leftSeps);
     const R = side(rightCount, rightSeps);
 
     // Rows used by lines before `upto` (each line: padding + header bar + itself)
     const advance = (s, upto) => {
       while (s.cur < upto) {
-        s.row += (s.pad[s.cur] || 0) + (s.seps[s.cur] ? 1 : 0) + 1;
+        s.row += (s.pad[s.cur] || 0) + (s.seps[s.cur] ? 1 : 0) + (s.below[s.cur] || 0) + 1;
         s.cur++;
       }
     };
     // Rows above line i's text (cursor must already be at i)
-    const rowOf = (s, i) => s.row + (s.pad[i] || 0) + (s.seps[i] ? 1 : 0);
+    const rowOf = (s, i) => s.row + (s.pad[i] || 0) + (s.seps[i] ? 1 : 0) + (s.below[i] || 0);
+    // Add rows above line i, or below its header bar if that bar is already lined up
+    const addPad = (s, i, n) => {
+      const map = s.headerAt === i ? s.below : s.pad;
+      map[i] = (map[i] || 0) + n;
+    };
 
-    for (const [li, ri] of points) {
+    const headerSet = new Set(headers);
+    for (const pt of points) {
+      const [li, ri] = pt;
       advance(L, li);
       advance(R, ri);
       const diff = rowOf(L, li) - rowOf(R, ri);
-      if (diff < 0) L.pad[li] = (L.pad[li] || 0) - diff;
-      else if (diff > 0) R.pad[ri] = (R.pad[ri] || 0) + diff;
+      if (diff < 0) addPad(L, li, -diff);
+      else if (diff > 0) addPad(R, ri, diff);
+      if (headerSet.has(pt)) { L.headerAt = li; R.headerAt = ri; }
     }
 
     // Trailing padding so both panes end on the same row
@@ -2233,7 +2278,7 @@ const DiffEngine = (() => {
     if (L.row < R.row) L.pad[leftCount] = R.row - L.row;
     else if (R.row < L.row) R.pad[rightCount] = L.row - R.row;
 
-    return { left: L.pad, right: R.pad };
+    return { left: L.pad, right: R.pad, leftBelowSep: L.below, rightBelowSep: R.below };
   }
 
   // =====================================================

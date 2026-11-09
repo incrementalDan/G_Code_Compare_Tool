@@ -78,6 +78,7 @@ const Editor = (() => {
       filename: 'untitled',
       annotations: {},      // line index -> short text shown after the line (variable values)
       alignmentPadding: {},
+      sepPadding: {},        // padding rows drawn just below a line's header bar
       toolpathSeparators: {},
       separatorPositions: [], // [{id, label, disabled, offsetTop}]
       dropdownOpen: false,
@@ -350,7 +351,7 @@ const Editor = (() => {
 
   /**
    * Rebuild the row model (cheap: no HTML) and draw the visible window.
-   * Row order per line must stay: padding rows, then separator, then the line.
+   * Row order per line must stay: padding rows, separator, padding below it, then the line.
    */
   function render(state) {
     const lines = state.content.split('\n');
@@ -362,7 +363,11 @@ const Editor = (() => {
     for (let i = 0; i < lines.length; i++) {
       const padding = state.alignmentPadding[i] || 0;
       for (let p = 0; p < padding; p++) rows.push({ kind: 'pad', line: i });
-      if (state.toolpathSeparators[i]) rows.push({ kind: 'sep', line: i });
+      if (state.toolpathSeparators[i]) {
+        rows.push({ kind: 'sep', line: i });
+        const below = state.sepPadding[i] || 0;
+        for (let p = 0; p < below; p++) rows.push({ kind: 'pad', line: i });
+      }
       lineToRow[i] = rows.length;
       rows.push({ kind: 'line', line: i });
       if (lines[i].length > maxLen) maxLen = lines[i].length;
@@ -619,7 +624,7 @@ const Editor = (() => {
     render(state);
   }
 
-  function setDecorations(side, decorations, padding, disabledLines, separators) {
+  function setDecorations(side, decorations, padding, disabledLines, separators, sepPadding) {
     const state = stateFor(side);
     if (!state) return;
     state.decorations = {};
@@ -627,6 +632,7 @@ const Editor = (() => {
       state.decorations[d.line] = { type: d.type, tokenDiffs: d.tokenDiffs || null };
     }
     state.alignmentPadding = padding || {};
+    state.sepPadding = sepPadding || {};
     state.disabledLines = disabledLines || new Set();
     state.toolpathSeparators = separators || {};
     render(state);

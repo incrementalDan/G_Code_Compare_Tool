@@ -156,6 +156,14 @@ centre warns "Toolpath order changed (n moved)".
   matched pair that follows it in its own file
 - Produces matched pairs { left, right } plus unmatched left/right entries
 
+**Compared line ranges** (`computeSemanticDiff`): each toolpath's lines are
+compared from its header line (anchorLine) to the line before the next header
+(diffStart / diffEnd), not from the expanded startLine. Old posts pull setup
+lines (IF/GOTO pallet block, M09 M05 G28 ...) above the header into the next
+toolpath; new posts keep them before the divider. Using the header as the
+datum keeps the same lines in the same compared range. The first toolpath
+keeps its startLine. startLine is still used for Hide / TOL ranges.
+
 **Fingerprinting** (`fingerprint`):
 - Structural signature for LCS matching: G-codes, M-codes, axis letters present,
   arc params, rotary, F/S/T/H/D presence, macro presence
@@ -204,6 +212,8 @@ Whole added/removed toolpaths do not.
 **Pairing changed lines** (`classifyOps`): removed and added lines in the same
 gap are paired only if they are the same kind (share at least half their word
 letters, or both comment-only). Others stay as plain removed / added.
+A tool list line `(T02 - ...)` pairs only with the same tool number, and a
+`(-----)` divider only with a divider, so an extra line can't shift the list.
 
 **Stats** (`countStats`): counts critical (incl. workoffset), minor, added, removed.
 Not used by the UI — app.js counts only what is actually displayed.
@@ -296,6 +306,9 @@ Not used by the UI — app.js counts only what is actually displayed.
   lines, header bars, padding) and pads the shorter side at each sync point.
   Sync points = matched toolpath header pairs (win first) + every op with both sides.
   Points that go backwards or cross a header are skipped. Trailing padding evens the totals.
+  A line pair may use the line right under a lined-up header bar (old post label
+  vs new post line after its divider); its gap goes below the bar
+  (leftBelowSep / rightBelowSep -> Editor sepPadding).
 - Updates center gutter diff markers
 - Counts stats from what is actually decorated (hidden and tolerance diffs not counted)
 - Updates status bar

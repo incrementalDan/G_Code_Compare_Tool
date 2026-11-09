@@ -791,11 +791,8 @@ N120 M30`;
     // Padding rows so matched lines and header bars share a screen row
     const pad = DiffEngine.alignRows(currentDiff, leftLineCount, rightLineCount,
       leftSeparators, rightSeparators, headerPoints);
-    const leftPadding = pad.left;
-    const rightPadding = pad.right;
-
-    Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
-    Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
+    Editor.setDecorations('left', leftDecos, pad.left, leftDisabled, leftSeparators, pad.leftBelowSep);
+    Editor.setDecorations('right', rightDecos, pad.right, rightDisabled, rightSeparators, pad.rightBelowSep);
 
     // Update diff markers in center gutter
     updateDiffMarkers();
