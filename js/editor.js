@@ -97,13 +97,16 @@ const Editor = (() => {
         const pt = pointAt(state, e);
         if (pt && ctrlClickCallback(pt)) return;
       }
+      if (clickCallback) clickCallback(pointAt(state, e));
       const rect = display.getBoundingClientRect();
       const row = Math.max(0, Math.floor((e.clientY - rect.top) / LINE_HEIGHT));
       const line = lineForRow(state, row);
       const col = columnAt(state, e.clientX);
-      const lineText = state.lines[line] || '';
+      // Count in the textarea's own text: browsers drop the \r of Windows line ends there
+      const taLines = textarea.value.split('\n');
+      const lineText = taLines[line] || '';
       let pos = 0;
-      for (let i = 0; i < line; i++) pos += state.lines[i].length + 1;
+      for (let i = 0; i < line && i < taLines.length; i++) pos += taLines[i].length + 1;
       pos += Math.min(col, lineText.length);
       textarea.focus({ preventScroll: true });
       textarea.selectionStart = textarea.selectionEnd = Math.min(pos, textarea.value.length);
@@ -631,7 +634,14 @@ const Editor = (() => {
 
   let hoverCallback = null;
   let ctrlClickCallback = null;
+  let clickCallback = null;
   function setHoverCallback(fn) { hoverCallback = fn; }
+  function setClickCallback(fn) { clickCallback = fn; }
+
+  /** Redraw the visible rows after the panes change size (info panel opened / closed). */
+  function refresh() {
+    for (const st of [leftState, rightState]) if (st) scheduleWindow(st);
+  }
   function setCtrlClickCallback(fn) { ctrlClickCallback = fn; }
 
   /** Line, column and screen position under the mouse, or null off a code line. */
@@ -711,7 +721,7 @@ const Editor = (() => {
 
   return {
     init, getValue, setValue, setFilename, getFilename,
-    setDecorations, setAnnotations, setHoverCallback, setCtrlClickCallback, flashLine, scrollToLine, setSyncScroll,
+    setDecorations, setAnnotations, setHoverCallback, setCtrlClickCallback, setClickCallback, refresh, flashLine, scrollToLine, setSyncScroll,
     setSeparatorCallbacks, setDropdownState, setTolAllActive,
     getDisplayRow, getTotalRows, getLineCount, loadFileInto,
     syntaxHighlightLine

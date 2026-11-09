@@ -6,7 +6,7 @@
  *
  * Content is plain HTML in INFO_HTML below, grouped as:
  *   Quick start · The passes · Always checked · Filters you control ·
- *   Colours · Variable values · Hover help · Not checked / limits · Navigation
+ *   Colours · Variable values · Info panel · Not checked / limits · Navigation
  */
 
 const Info = (() => {
@@ -256,9 +256,9 @@ const Info = (() => {
     <li><b>Skipped</b> lines (jumped over by a GOTO that is known to be taken) are marked <code>↷ skipped by GOTO</code>.</li>
     <li><b>IF lines</b> show their result: <code>→ true</code>, <code>→ false</code> or <code>→ ?</code> (needs a machine value).</li>
   </ul>
-  <h4>Test an IF <span class="info-where">hover the IF or GOTO</span></h4>
+  <h4>Test an IF <span class="info-where">click the IF or GOTO</span></h4>
   <p>When only the machine knows the answer (e.g. <code>IF[#11032 LT 7.3086]</code> reads the tool length),
-  the tip offers <b>Test TRUE</b> and <b>Test FALSE</b>. The tool then treats that IF as your choice:
+  the info panel offers <b>Test TRUE</b> and <b>Test FALSE</b>. The tool then treats that IF as your choice:
   values below update, jumped lines are marked skipped, an alarm line reached by the jump shows
   <code>⛔ alarm stops the program here</code>, and it jumps you to the line that would run next.
   Active tests are listed in the legend strip (<code>L35 = TRUE ✕</code>); click one to clear it, or <b>Clear all</b>.
@@ -267,17 +267,23 @@ const Info = (() => {
 </section>
 
 <section id="info-hover" class="info-card">
-  <h3>Hover help</h3>
-  <p>Point at a G-code, M-code, word, macro keyword or <code>#variable</code> to see what it means.
-  Variables show their value on that line. Each tip links to the matching page on the
-  <a href="https://zappettiniconsulting.com/wiki" target="_blank" rel="noopener noreferrer">Zappettini Consulting CNC wiki</a>.
-  Meanings are for a Brother mill (Fanuc as backup). <kbd>Esc</kbd> closes a tip.</p>
-  <p>Each tip shows the <b>values first</b>, then buttons, then the explanation and the wiki link.</p>
+  <h3>Info panel <span class="info-where">bottom of the screen</span></h3>
+  <p><b>Click</b> a G-code, M-code, word, macro keyword or <code>#variable</code>: the panel opens at the bottom
+  and shows it. While the panel is open, <b>pointing</b> at code shows that code instead; move off the code
+  and it goes back to what you clicked, so you can press its buttons.</p>
+  <ul class="info-list">
+    <li><b>Left side:</b> values on that line, and buttons (Jump, Test TRUE / FALSE).</li>
+    <li><b>Right side:</b> what it means, and a link to the matching page on the
+      <a href="https://zappettiniconsulting.com/wiki" target="_blank" rel="noopener noreferrer">Zappettini Consulting CNC wiki</a>.</li>
+    <li><b>▾</b> (or <kbd>Esc</kbd>) folds it down to one line. <b>✕</b> closes it until you click code again.
+      It stays hidden until you click something.</li>
+  </ul>
+  <p class="info-note">Meanings are for a Brother mill (Fanuc as backup).</p>
   <h4>Jumps</h4>
   <ul class="info-list">
-    <li><b>GOTO / IF … GOTO / M99 P</b>: the tip shows the target line, the test result and which line runs next.
+    <li><b>GOTO / IF … GOTO / M99 P</b>: the panel shows the target line, the test result and which line runs next.
       <b>Jump to line …</b> takes you there. <kbd>Ctrl</kbd>+click (<kbd>⌘</kbd>+click on Mac) jumps straight away.</li>
-    <li><b>N label</b> (e.g. <code>N98032</code>): the tip lists the lines that jump to it.</li>
+    <li><b>N label</b> (e.g. <code>N98032</code>): the panel lists the lines that jump to it.</li>
     <li>After a jump, <b>← Back to line …</b> appears at the bottom for 15 seconds.</li>
   </ul>
 </section>
@@ -320,7 +326,7 @@ const Info = (() => {
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
       Warns if line counts differ by more than 10%. Right side: control, units per file
       (G20 inch / G21 mm — red if they differ), and the pane, line and column of the cursor.</td></tr>
-    <tr><td>Hover</td><td>Point at any code for its value, meaning and a wiki link.</td></tr>
+    <tr><td>Click code</td><td>Info panel at the bottom: value, meaning and a wiki link. Pointing updates it while open.</td></tr>
     <tr><td><kbd>Ctrl</kbd>+click a GOTO</td><td>Jump to the line it goes to. <b>← Back</b> returns.</td></tr>
     <tr><td>Feeds &amp; Speeds</td><td>Per-toolpath table of RPM and feeds, left vs right.</td></tr>
     <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file.</td></tr>

@@ -29,7 +29,7 @@ gcode-compare/
 │   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
 │   ├── tools.js        — Tool Table: tool list / gauge / usage / fixture compare + popup
 │   ├── info.js         — in-app Info popup: what is / isn't checked
-│   └── hover-help.js   — hover tooltips: meaning of G/M/words/#vars + Zappettini wiki links
+│   └── hover-help.js   — bottom info panel: meaning/values of G/M/words/#vars + Zappettini wiki links
 ├── posts/              — shop Fusion post processors (reference only, not loaded)
 │   ├── Brother Speedio M multi-tasking - APW_v8_9_1.cps
 │   └── Brother Speedio R - APW_R_v2.cps
@@ -60,7 +60,7 @@ Sections (keep related items grouped in the right one):
 - Filters you control — Comparison rules table, Tolerance table, Show/hide
 - Colours
 - Variable values (what MacroEval works out / leaves unknown)
-- Hover help
+- Info panel (hover help)
 - Not checked / limits — anything a user must NOT rely on
 - Navigation
 
@@ -333,22 +333,30 @@ line-count mismatch warning (>10% difference); right side: control, units, priva
 - app.js shows the values as a grey note after the line (`→ X1.5 Y?`,
   `→ #102 = 4`, `↷ skipped by GOTO`). Setting "Show variable values" (ON).
 
-### Hover help (`hover-help.js`)
+### Info panel (`hover-help.js`, `#info-panel` in index.html)
 
-- Editor reports mouse line + column (`Editor.setHoverCallback`). HoverHelp
-  finds the token (DiffEngine.parseGCodeLine) and shows a tooltip after 350 ms.
+- Bottom panel like VS Code, between the panes and the status bar. No floating tip.
+- Hidden until code is clicked. Click (Editor.setClickCallback) -> opens / expands
+  the panel and pins that item. While open, hover (Editor.setHoverCallback,
+  120 ms) shows what is under the mouse; leaving the code or entering the panel
+  goes back to the pinned item so its buttons can be pressed.
+- Header: ▾ collapse (or Esc / click header), ✕ close. Height via CSS var
+  --panel-h on :root (0 / 24 / 160 px); #main height subtracts it. A window
+  resize event redraws editors (Editor.refresh) and the gutter markers.
+- Layout: left = values (rows) + buttons, right = meaning, explain, wiki link.
+  Left column hides when empty. Columns stack under 700 px.
+- lookup(side, line, text, col) finds the token (DiffEngine.parseGCodeLine).
 - Tables: G, M, word letters, macro keywords, #variable ranges (Brother first,
   Fanuc fallback). Brother #5221+ / #7001+ work offsets, #11000+n tool length,
   #13000+n diameter (from the shop post notes), #3700 tool in spindle.
 - Values come from the last compare (App.getDiffContext), only when the line text still matches.
-- Tip order: title, values (rows), buttons, divider, meaning, explain, wiki link.
-  Values first so experienced users are not slowed down.
+- Values first (left) so experienced users are not slowed down.
 - GOTO / IF / M99 P (flowInfo): test, result, target line, runs next. Buttons:
   Test TRUE / Test FALSE (only when the result is unknown or being tested),
   Clear test, Jump to line. N labels (labelInfo): lines that jump here.
 - App.jumpTo(side, line, from): scroll, flash the line, show #jump-back for 15 s.
   Ctrl/Cmd+click on a GOTO jumps (Editor.setCtrlClickCallback).
-- Each tip links to a page on https://zappettiniconsulting.com/wiki/ (the author
+- Each item links to a page on https://zappettiniconsulting.com/wiki/ (the author
   is a contact of the shop; keep the links pointing at real pages).
 
 ### Status bar (right side)

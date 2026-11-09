@@ -423,115 +423,145 @@ const HoverHelp = (() => {
   }
 
   // =====================================================
-  // Tooltip
+  // Info panel (bottom, like VS Code)
+  //   Click code  -> panel opens (if closed) and shows it; that item is "pinned".
+  //   Hover code  -> while the panel is open, shows what is under the mouse.
+  //   Leave code  -> back to the pinned item, so its buttons can be reached.
+  //   Hidden until something has been clicked. Collapse with the arrow or Esc.
   // =====================================================
 
-  let tipEl = null;
-  let showTimer = null, hideTimer = null;
-  let currentKey = '';
+  const PANEL_H = 160; // open height in px (header 24 + body)
+  const HEAD_H = 24;
+  let panel = null;
+  let pinned = null;      // { info, where } from the last click
+  let shown = null;       // what the panel shows right now
+  let tipActions = [];
+  let expanded = false;
 
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  function ensureTip() {
-    if (tipEl) return tipEl;
-    tipEl = document.createElement('div');
-    tipEl.id = 'hover-tip';
-    tipEl.setAttribute('role', 'tooltip');
-    tipEl.addEventListener('mouseenter', () => { clearTimeout(hideTimer); clearTimeout(showTimer); });
-    tipEl.addEventListener('click', (e) => {
-      const b = e.target.closest('.ht-btn');
-      if (!b) return;
-      const a = tipActions[+b.dataset.i];
-      hide();
-      if (a) runAction(a);
-    });
-    tipEl.addEventListener('mouseleave', () => scheduleHide());
-    document.body.appendChild(tipEl);
-    return tipEl;
+  function setHeight() {
+    const h = !panel || panel.hidden ? 0 : (expanded ? PANEL_H : HEAD_H);
+    document.documentElement.style.setProperty('--panel-h', h + 'px');
+    window.dispatchEvent(new Event('resize'));
   }
 
-  let tipActions = [];
+  function open() {
+    if (!panel) return;
+    const changed = panel.hidden || !expanded;
+    panel.hidden = false;
+    expanded = true;
+    panel.classList.remove('collapsed');
+    if (changed) setHeight();
+  }
 
-  function render(info, x, rowTop) {
-    const el = ensureTip();
-    let html = `<div class="ht-title">${esc(info.title)}</div>`;
-    // 1. Values (what experienced users want at a glance)
+  function collapse() {
+    if (!panel || panel.hidden) return;
+    expanded = false;
+    panel.classList.add('collapsed');
+    setHeight();
+  }
+
+  function close() {
+    if (!panel) return;
+    panel.hidden = true;
+    expanded = false;
+    setHeight();
+  }
+
+  function where(pt) {
+    return (pt.side === 'left' ? 'Left' : 'Right') + ' \u00b7 line ' + (pt.line + 1);
+  }
+
+  /** Fill the panel: values + buttons on the left, explanation + link on the right. */
+  function show(entry) {
+    if (!panel || !entry) return;
+    shown = entry;
+    const info = entry.info;
+    panel.querySelector('.ip-title').textContent = info.title;
+    panel.querySelector('.ip-where').textContent = entry.where;
+
+    let left = '';
     if (info.rows.length) {
-      html += '<div class="ht-rows">';
-      for (const [k, v] of info.rows) html += `<div class="ht-row"><span class="ht-key">${esc(k)}:</span> ${esc(v)}</div>`;
-      html += '</div>';
+      left += '<div class="ht-rows">';
+      for (const [k, v] of info.rows) left += `<div class="ht-row"><span class="ht-key">${esc(k)}:</span> ${esc(v)}</div>`;
+      left += '</div>';
     }
-    // 2. Buttons: jump, test as true / false
     tipActions = info.actions || [];
     if (tipActions.length) {
-      html += '<div class="ht-actions">' + tipActions.map((a, i) =>
+      left += '<div class="ht-actions">' + tipActions.map((a, i) =>
         `<button class="ht-btn ${a.cls || ''}" data-i="${i}">${esc(a.label)}</button>`).join('') + '</div>';
     }
-    // 3. Explanation, then 4. wiki link at the bottom
-    if (info.rows.length || tipActions.length) html += '<div class="ht-divider"></div>';
-    html += `<div class="ht-meaning">${esc(info.meaning)}</div>`;
-    if (info.explain) html += `<div class="ht-explain">${esc(info.explain)}</div>`;
+    let right = `<div class="ht-meaning">${esc(info.meaning)}</div>`;
+    if (info.explain) right += `<div class="ht-explain">${esc(info.explain)}</div>`;
     if (info.page) {
-      html += `<a class="ht-link" href="${WIKI}${info.page}" target="_blank" rel="noopener noreferrer">More on the Zappettini CNC wiki \u2192</a>`;
+      right += `<a class="ht-link" href="${WIKI}${info.page}" target="_blank" rel="noopener noreferrer">More on the Zappettini CNC wiki \u2192</a>`;
     }
-    el.innerHTML = html;
-    el.classList.add('visible');
-    // Place below the line, kept on screen
-    const w = el.offsetWidth, h = el.offsetHeight;
-    let left = Math.min(x + 8, window.innerWidth - w - 8);
-    let top = rowTop + 22;
-    if (top + h > window.innerHeight - 8) top = rowTop - h - 4;
-    el.style.left = Math.max(8, left) + 'px';
-    el.style.top = Math.max(8, top) + 'px';
+    panel.querySelector('.ip-left').innerHTML = left;
+    panel.querySelector('.ip-right').innerHTML = right;
   }
 
   function runAction(a) {
     if (typeof App === 'undefined') return;
     if (a.act === 'assume') App.setAssumption(a.side, a.line, a.value < 0 ? null : !!a.value);
     if (a.go !== null && a.go !== undefined) App.jumpTo(a.side, a.go, a.line);
+    // Values changed: refresh the pinned item from the new compare
+    if (pinned && pinned.pt) {
+      const info = lookup(pinned.pt.side, pinned.pt.line, pinned.pt.text, pinned.pt.col);
+      if (info) { pinned.info = info; show(pinned); }
+    }
   }
 
   /** Ctrl/Cmd + click on a GOTO / M99 P: jump straight to its target. */
   function onCtrlClick(pt) {
     const info = lookup(pt.side, pt.line, pt.text, pt.col);
     if (!info || info.ctrlJump === null || info.ctrlJump === undefined) return false;
-    hide();
     App.jumpTo(pt.side, info.ctrlJump, pt.line);
     return true;
   }
 
-  function hide() {
-    if (tipEl) tipEl.classList.remove('visible');
-    currentKey = '';
+  function onClick(pt) {
+    if (!pt) return;
+    const info = lookup(pt.side, pt.line, pt.text, pt.col);
+    if (!info) return; // blank / comment: leave the panel as it is
+    pinned = { info, where: where(pt), pt };
+    open();
+    show(pinned);
   }
 
-  function scheduleHide() {
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(hide, 300);
-  }
-
-  function onHover(ev) {
-    clearTimeout(showTimer);
-    if (!ev) { scheduleHide(); return; }
-    const info = lookup(ev.side, ev.line, ev.text, ev.col);
-    if (!info) { scheduleHide(); return; }
-    const key = ev.side + ':' + ev.line + ':' + info.title;
-    if (key === currentKey) { clearTimeout(hideTimer); return; }
-    showTimer = setTimeout(() => {
-      clearTimeout(hideTimer);
-      currentKey = key;
-      render(info, ev.x, ev.rowTop);
-    }, 350);
+  let hoverTimer = null;
+  function onHover(pt) {
+    clearTimeout(hoverTimer);
+    if (!panel || panel.hidden || !expanded) return;
+    if (!pt) { if (pinned && shown !== pinned) show(pinned); return; }
+    hoverTimer = setTimeout(() => {
+      const info = lookup(pt.side, pt.line, pt.text, pt.col);
+      if (info) show({ info, where: where(pt), pt });
+      else if (pinned && shown !== pinned) show(pinned);
+    }, 120);
   }
 
   function init() {
     if (typeof Editor === 'undefined' || !Editor.setHoverCallback) return;
+    panel = document.getElementById('info-panel');
+    if (!panel) return;
     Editor.setHoverCallback(onHover);
+    if (Editor.setClickCallback) Editor.setClickCallback(onClick);
     if (Editor.setCtrlClickCallback) Editor.setCtrlClickCallback(onCtrlClick);
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hide(); });
-    window.addEventListener('scroll', hide, true);
+
+    panel.addEventListener('click', (e) => {
+      const b = e.target.closest('.ht-btn');
+      if (b) { const a = tipActions[+b.dataset.i]; if (a) runAction(a); return; }
+      if (e.target.closest('.ip-close')) { e.stopPropagation(); close(); return; }
+      if (e.target.closest('.ip-head')) { if (expanded) collapse(); else open(); }
+    });
+    // Mouse over the panel: keep showing the pinned item (its buttons)
+    panel.addEventListener('mouseenter', () => { clearTimeout(hoverTimer); if (pinned && shown !== pinned) show(pinned); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && panel && !panel.hidden && expanded && !document.getElementById('info-overlay')?.classList.contains('open')) collapse();
+    });
   }
 
   if (typeof document !== 'undefined') {

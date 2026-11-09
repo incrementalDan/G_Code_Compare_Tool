@@ -124,6 +124,8 @@ N120 M30`;
     bindSettings();
     bindKeyboard();
     bindJumpUi();
+    // Panes change size when the window or the info panel changes
+    window.addEventListener('resize', () => { Editor.refresh(); updateDiffMarkers(); });
 
     // Restore filenames
     let lf = null, rf = null;
