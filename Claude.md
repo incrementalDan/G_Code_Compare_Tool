@@ -285,14 +285,17 @@ Not used by the UI — app.js counts only what is actually displayed.
 - Calls applyDecorations
 
 **Decoration application** (`applyDecorations`):
-- Builds left/right decoration arrays and alignment padding from diff ops
+- Builds left/right decoration arrays from diff ops
 - Hidden toolpath ops are skipped unless op.alwaysShow
 - effectiveType: 'tolerance' becomes 'minor' when that toolpath's TOL is off;
   every other type passes through unchanged
 - One-sided ops with workOffset are decorated as workoffset
 - Builds leftSeparators / rightSeparators keyed by anchorLine
 - Adds placeholder separators for unmatched toolpaths on the opposite side
-- Equalizes total display line counts between panes (accounts for padding + separators)
+- Padding comes from `DiffEngine.alignRows`: it measures display rows (lines, blank
+  lines, header bars, padding) and pads the shorter side at each sync point.
+  Sync points = matched toolpath header pairs (win first) + every op with both sides.
+  Points that go backwards or cross a header are skipped. Trailing padding evens the totals.
 - Updates center gutter diff markers
 - Counts stats from what is actually decorated (hidden and tolerance diffs not counted)
 - Updates status bar

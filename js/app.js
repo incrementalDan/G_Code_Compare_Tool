@@ -674,12 +674,7 @@ N120 M30`;
 
     const leftDecos = [];
     const rightDecos = [];
-    const leftPadding = {};
-    const rightPadding = {};
     diffPositions = [];
-
-    let leftPendingPad = 0;
-    let rightPendingPad = 0;
 
     // Stats count only what is actually shown
     const stats = { workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 };
@@ -688,28 +683,11 @@ N120 M30`;
       const op = currentDiff[i];
       const disabled = isOpDisabled(op);
 
-      // Toolpath boundary flush — always, even for disabled ops
-      if (op.leftIdx !== undefined) {
-        const leftTp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
-        if (leftTp && leftTp.startLine === op.leftIdx && leftPendingPad > 0) {
-          leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
-          leftPendingPad = 0;
-        }
-      }
-      if (op.rightIdx !== undefined) {
-        const rightTp = getToolpathForLine(op.rightIdx, currentToolpaths.right);
-        if (rightTp && rightTp.startLine === op.rightIdx && rightPendingPad > 0) {
-          rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
-          rightPendingPad = 0;
-        }
-      }
-
       // Resolve effective type considering per-toolpath tolerance setting
       const etype = effectiveType(op);
 
-      // One-sided ops: always count padding (even if disabled), optionally skip decoration
+      // One-sided ops: optionally skip decoration
       if (etype === 'added') {
-        leftPendingPad++;
         if (disabled && !op.alwaysShow) continue;
         rightDecos.push({ line: op.rightIdx, type: op.workOffset ? 'workoffset' : 'added' });
         diffPositions.push(i);
@@ -717,7 +695,6 @@ N120 M30`;
         continue;
       }
       if (etype === 'removed') {
-        rightPendingPad++;
         if (disabled && !op.alwaysShow) continue;
         leftDecos.push({ line: op.leftIdx, type: op.workOffset ? 'workoffset' : 'removed' });
         diffPositions.push(i);
@@ -730,15 +707,6 @@ N120 M30`;
 
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
       if (etype === 'equal' || hasBothSides) {
-        // Flush pending padding
-        if (leftPendingPad > 0 && op.leftIdx !== undefined) {
-          leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
-          leftPendingPad = 0;
-        }
-        if (rightPendingPad > 0 && op.rightIdx !== undefined) {
-          rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
-          rightPendingPad = 0;
-        }
         if (etype !== 'equal') {
           const dt = decoType(etype);
           leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
@@ -752,14 +720,6 @@ N120 M30`;
           }
         }
       }
-    }
-
-    // Trailing padding
-    if (leftPendingPad > 0) {
-      leftPadding[leftLineCount] = (leftPadding[leftLineCount] || 0) + leftPendingPad;
-    }
-    if (rightPendingPad > 0) {
-      rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + rightPendingPad;
     }
 
     // Build toolpath separator data for inline display
@@ -789,11 +749,15 @@ N120 M30`;
 
     // Add placeholder separators for unmatched toolpaths on the opposite side.
     // IDs match the real toolpath convention so isOpDisabled() works without changes.
+    // Each header pair is also a sync point so the bars sit side by side.
+    const sepLineOf = tp => (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
+    const headerPoints = [];
     for (const match of currentTpMatches) {
       if (match.left && !match.right) {
         let rightLine = findCorrespondingLine(match, 'right', currentTpMatches, rightLineCount);
         while (rightLine > 0 && rightSeparators[rightLine]) rightLine--;
         if (!rightSeparators[rightLine]) {
+          headerPoints.push([sepLineOf(match.left), rightLine]);
           rightSeparators[rightLine] = {
             id: String(match.left.id),
             label: buildTpLabel(match.left) + ' (not in file)',
@@ -807,6 +771,7 @@ N120 M30`;
         let leftLine = findCorrespondingLine(match, 'left', currentTpMatches, leftLineCount);
         while (leftLine > 0 && leftSeparators[leftLine]) leftLine--;
         if (!leftSeparators[leftLine]) {
+          headerPoints.push([leftLine, sepLineOf(match.right)]);
           leftSeparators[leftLine] = {
             id: 'R' + match.right.id,
             label: buildTpLabel(match.right) + ' (not in file)',
@@ -819,20 +784,15 @@ N120 M30`;
       }
     }
 
-    // Final equalization: guarantee both panes have identical total display line counts.
-    // Formula must match render(): totalDisplayLines = lineCount + padTotal + sepCount
-    const leftPadTotal = Object.values(leftPadding).reduce((a, b) => a + b, 0);
-    const rightPadTotal = Object.values(rightPadding).reduce((a, b) => a + b, 0);
-    const leftSepCount = Object.keys(leftSeparators).length;
-    const rightSepCount = Object.keys(rightSeparators).length;
-    const leftTotal = leftLineCount + leftPadTotal + leftSepCount;
-    const rightTotal = rightLineCount + rightPadTotal + rightSepCount;
-
-    if (leftTotal < rightTotal) {
-      leftPadding[leftLineCount] = (leftPadding[leftLineCount] || 0) + (rightTotal - leftTotal);
-    } else if (rightTotal < leftTotal) {
-      rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + (leftTotal - rightTotal);
+    for (const match of currentTpMatches) {
+      if (match.left && match.right) headerPoints.push([sepLineOf(match.left), sepLineOf(match.right)]);
     }
+
+    // Padding rows so matched lines and header bars share a screen row
+    const pad = DiffEngine.alignRows(currentDiff, leftLineCount, rightLineCount,
+      leftSeparators, rightSeparators, headerPoints);
+    const leftPadding = pad.left;
+    const rightPadding = pad.right;
 
     Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
     Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);

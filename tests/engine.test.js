@@ -569,5 +569,39 @@ test('IF THEN can be tested', () => {
   eq(resolveA(L, new Map([[1, { raw: L[1], value: true }]]))[2].resolved.X, 7);
 });
 
+console.log('\nSide-by-side alignment');
+// Display row of each line, built the same way the editor draws it
+function rowsOf(count, pad, seps) {
+  const rows = []; let r = 0;
+  for (let i = 0; i < count; i++) { r += (pad[i] || 0) + (seps[i] ? 1 : 0); rows.push(r++); }
+  return { rows, total: r + (pad[count] || 0) };
+}
+function checkAligned(left, right, lseps = {}, rseps = {}, headers = []) {
+  const d = diff(left, right);
+  const pad = DE.alignRows(d.ops, left.length, right.length, lseps, rseps, headers);
+  const L = rowsOf(left.length, pad.left, lseps), R = rowsOf(right.length, pad.right, rseps);
+  for (const o of d.ops) {
+    if (o.leftIdx === undefined || o.rightIdx === undefined) continue;
+    if (L.rows[o.leftIdx] !== R.rows[o.rightIdx]) throw new Error(`L${o.leftIdx + 1} row ${L.rows[o.leftIdx]} vs R${o.rightIdx + 1} row ${R.rows[o.rightIdx]}`);
+  }
+  eq(L.total, R.total);
+  return { L, R };
+}
+test('blank lines on one side keep lines aligned', () =>
+  checkAligned(['G0 X1.', 'G0 Y1.', 'G0 Z1.'], ['G0 X1.', '', '', '', 'G0 Y1.', '', 'G0 Z1.']));
+test('added and removed lines keep lines aligned', () =>
+  checkAligned(['G0 X1.', 'M08', 'G0 Y1.', 'G0 Z1.'], ['G0 X1.', 'G0 Y1.', 'M09', 'M05', 'G0 Z1.']));
+test('header bar on one side only keeps lines aligned', () =>
+  checkAligned(['G0 X1.', 'G0 Y1.'], ['G0 X1.', 'G0 Y1.'], { 1: {} }, {}));
+test('header bars line up side by side', () => {
+  const { L, R } = checkAligned(['G0 X1.', '', 'M08', 'G0 Y1.'], ['G0 X1.', 'G0 Y1.'], { 3: {} }, { 1: {} }, [[3, 1]]);
+  eq(L.rows[3], R.rows[1]);
+});
+test('header beats a line pair that crosses it', () => {
+  const pad = DE.alignRows([{ leftIdx: 0, rightIdx: 3 }], 4, 4, { 2: {} }, { 1: {} }, [[2, 1]]);
+  const L = rowsOf(4, pad.left, { 2: {} }), R = rowsOf(4, pad.right, { 1: {} });
+  eq(L.rows[2], R.rows[1]);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

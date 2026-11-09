@@ -2154,6 +2154,89 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
+  // Side-by-side row alignment
+  // =====================================================
+
+  /**
+   * Work out the blank padding rows each pane needs so matched lines sit on
+   * the same screen row. Rows are measured, not counted from ops, so blank
+   * lines and toolpath header bars are included.
+   *
+   * Sync points are [leftLine, rightLine] pairs that should share a row.
+   * Header points (toolpath header bars) win first; then every op with both
+   * sides is used if it fits between them. A point that goes backwards on
+   * either side, or crosses a header, is skipped.
+   *
+   * Returns { left: {line: rows}, right: {line: rows} }. Padding at a line
+   * is drawn above that line's header bar; key lineCount = trailing padding.
+   */
+  function alignRows(ops, leftCount, rightCount, leftSeps, rightSeps, headerPoints) {
+    const byLeft = (a, b) => a[0] - b[0] || a[1] - b[1];
+    const inRange = p => p[0] >= 0 && p[1] >= 0 && p[0] < leftCount && p[1] < rightCount;
+
+    // Headers: keep the ones that run forward on both sides
+    const headers = [];
+    for (const h of (headerPoints || []).filter(inRange).sort(byLeft)) {
+      const last = headers[headers.length - 1];
+      if (!last || (h[0] > last[0] && h[1] > last[1])) headers.push(h);
+    }
+
+    const pairs = [];
+    for (const op of ops) {
+      if (op.leftIdx !== undefined && op.rightIdx !== undefined) pairs.push([op.leftIdx, op.rightIdx]);
+    }
+    pairs.sort(byLeft);
+
+    // Merge: line pairs must sit strictly between the headers around them
+    const points = [];
+    let last = [-1, -1];
+    let hi = 0;
+    for (const p of pairs) {
+      if (!inRange(p)) continue;
+      while (hi < headers.length && headers[hi][0] <= p[0]) {
+        points.push(headers[hi]);
+        last = headers[hi++];
+      }
+      const next = headers[hi];
+      if (p[0] > last[0] && p[1] > last[1] && (!next || (p[0] < next[0] && p[1] < next[1]))) {
+        points.push(p);
+        last = p;
+      }
+    }
+    while (hi < headers.length) points.push(headers[hi++]);
+
+    const side = (count, seps) => ({ count, seps: seps || {}, pad: {}, cur: 0, row: 0 });
+    const L = side(leftCount, leftSeps);
+    const R = side(rightCount, rightSeps);
+
+    // Rows used by lines before `upto` (each line: padding + header bar + itself)
+    const advance = (s, upto) => {
+      while (s.cur < upto) {
+        s.row += (s.pad[s.cur] || 0) + (s.seps[s.cur] ? 1 : 0) + 1;
+        s.cur++;
+      }
+    };
+    // Rows above line i's text (cursor must already be at i)
+    const rowOf = (s, i) => s.row + (s.pad[i] || 0) + (s.seps[i] ? 1 : 0);
+
+    for (const [li, ri] of points) {
+      advance(L, li);
+      advance(R, ri);
+      const diff = rowOf(L, li) - rowOf(R, ri);
+      if (diff < 0) L.pad[li] = (L.pad[li] || 0) - diff;
+      else if (diff > 0) R.pad[ri] = (R.pad[ri] || 0) + diff;
+    }
+
+    // Trailing padding so both panes end on the same row
+    advance(L, leftCount);
+    advance(R, rightCount);
+    if (L.row < R.row) L.pad[leftCount] = R.row - L.row;
+    else if (R.row < L.row) R.pad[rightCount] = L.row - R.row;
+
+    return { left: L.pad, right: R.pad };
+  }
+
+  // =====================================================
   // Exports
   // =====================================================
 
@@ -2169,6 +2252,7 @@ const DiffEngine = (() => {
     trackContext,
     commentRole,
     computeSemanticDiff,
+    alignRows,
     countStats
   };
 })();
