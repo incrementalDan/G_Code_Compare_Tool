@@ -525,13 +525,24 @@ const MacroEval = (() => {
       }
     };
     let skipTo = -1;
+    let skipFrom = -1; // line of the GOTO that started the skip
     let testTarget = -1; // label line reached by a jump the user is testing as TRUE
 
     for (let i = 0; i < n; i++) {
       const p = parsedLines[i];
       if (i > 0 && progStart[i] === i) store.clear(); // new program block
       if (forget.has(i)) applyForget(forget.get(i));
-      if (skipTo > i) { if (stmts[i].kind !== 'none') p.macroSkipped = true; continue; }
+      if (skipTo > i) {
+        // Another GOTO / M99 P lands here, so the line does run: stop skipping.
+        // Values on arrival come from that other jump: treat them as unknown.
+        if (p.jumpSources && p.jumpSources.some(src => src !== skipFrom)) {
+          skipTo = -1;
+          store.clear();
+        } else {
+          if (stmts[i].kind !== 'none') p.macroSkipped = true;
+          continue;
+        }
+      }
       skipTo = -1;
 
       const s = stmts[i];
@@ -576,7 +587,7 @@ const MacroEval = (() => {
           if (!p.jump) p.jump = { targetN: Math.round(tv), targetLine: t, conditional: !!s.cond, loop: t >= 0 && t <= i, kind: 'goto' };
           if (t < 0 || t <= i) break; // missing label, or a loop (handled above)
           if (c === undefined || !sure) addForget(t, writesIn(i + 1, t - 1));
-          else if (c) { skipTo = t; if (p.cond && p.cond.assumed) testTarget = t; }
+          else if (c) { skipTo = t; skipFrom = i; if (p.cond && p.cond.assumed) testTarget = t; }
           break;
         }
         case 'while': case 'end':

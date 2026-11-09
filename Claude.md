@@ -410,7 +410,12 @@ Ideas from reviewing the Zappettini Macro Playground and wiki (Nov 2026).
 5. **Light theme** — toggle for bright shop-floor screens.
 6. **Subprogram compare** — when a program calls `M98 P____`, open and compare
    that subprogram file too.
-7. **Control / machine profiles** — pick a profile (e.g. Brother Speedio M,
+7. **Tolerance on variable words (look into)** — today `X#1` (#1 = 1.0) vs
+   `X1.0004` is red (critical), while the same change between plain numbers is
+   within tolerance. Decide whether axis / arc words with a known worked-out
+   value should go through applyToleranceClassification like plain numbers.
+   Safe as is, but noisier.
+8. **Control / machine profiles** — pick a profile (e.g. Brother Speedio M,
    Brother R, Fanuc 0i, Haas, ...) that sets: G/M code meanings and wiki links
    (hover-help.js tables), system variable map (#5221 / #7001 / tool offset
    ranges), toolpath detection rules (G100, preamble codes, divider layout),

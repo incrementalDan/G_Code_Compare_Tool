@@ -529,6 +529,22 @@ const HoverHelp = (() => {
     pinned = { info, where: where(pt), pt };
     open();
     show(pinned);
+    // The panes just got shorter: keep the clicked line on screen
+    Editor.ensureLineVisible(pt.side, pt.line);
+  }
+
+  /**
+   * After a re-compare: show the pinned item with fresh values, or close the
+   * panel when that line is gone or changed (New, Swap, another file loaded).
+   */
+  function refresh() {
+    if (!panel || panel.hidden || !pinned) return;
+    const pt = pinned.pt;
+    const text = Editor.getValue(pt.side).split('\n')[pt.line];
+    const info = text === pt.text ? lookup(pt.side, pt.line, text, pt.col) : null;
+    if (!info) { pinned = null; shown = null; close(); return; }
+    pinned.info = info;
+    if (shown === pinned || !shown) show(pinned);
   }
 
   let hoverTimer = null;
@@ -569,5 +585,5 @@ const HoverHelp = (() => {
     else init();
   }
 
-  return { lookup, varInfo };
+  return { lookup, varInfo, refresh };
 })();

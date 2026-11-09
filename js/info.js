@@ -329,7 +329,7 @@ const Info = (() => {
     <tr><td>Click code</td><td>Info panel at the bottom: value, meaning and a wiki link. Pointing updates it while open.</td></tr>
     <tr><td><kbd>Ctrl</kbd>+click a GOTO</td><td>Jump to the line it goes to. <b>← Back</b> returns.</td></tr>
     <tr><td>Feeds &amp; Speeds</td><td>Per-toolpath table of RPM and feeds, left vs right.</td></tr>
-    <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file.</td></tr>
+    <tr><td>Swap Panes / Save</td><td>Swap left and right. Save downloads the edited file, with the same line endings it came with (Windows CRLF stays CRLF).</td></tr>
   </table>
 </section>
 `;

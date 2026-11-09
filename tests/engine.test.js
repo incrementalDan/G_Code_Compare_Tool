@@ -479,6 +479,14 @@ test('no alarm note on a / line without a test', () => {
   const L = ['/ IF[#11032LT7.3]GOTO20', '/ GOTO 30', '/ N20 #3000=32', '/ N30'];
   eq(resolveA(L)[2].alarmStop, undefined);
 });
+test('line skipped by one GOTO but reached by another is not marked skipped', () => {
+  const P = resolveA(['#1=1', 'GOTO 20', 'N10 #1=2', 'N20 G1 X#1', 'GOTO 10']);
+  eq(!!P[2].macroSkipped, false);
+});
+test('plain forward GOTO still skips', () => {
+  const P = resolveA(['#1=1', 'GOTO 20', '#1=2', 'N20 G1 X#1']);
+  eq(!!P[2].macroSkipped + ' ' + P[3].resolved.X, 'true 1');
+});
 test('M99 P records its jump', () => {
   const P = resolveA(['N10 G0 X0.', 'M99 P10']);
   eq(P[1].jump.targetLine + ' ' + P[1].jump.kind, '0 m99');

@@ -602,9 +602,15 @@ const Editor = (() => {
     return state ? state.content : '';
   }
 
-  function setValue(side, text) {
+  /**
+   * Load text into a pane. eol = the file's line ending ('\r\n' or '\n'),
+   * remembered so Save writes it back the same way (the browser's text box
+   * drops \r after any edit). Worked out from the text when not given.
+   */
+  function setValue(side, text, eol) {
     const state = stateFor(side);
     if (!state) return;
+    state.eol = eol || (/\r\n/.test(text) ? '\r\n' : '\n');
     state.content = text;
     state.textarea.value = text;
     state.cursorLine = -1;
@@ -668,6 +674,24 @@ const Editor = (() => {
     state.flashTimer = setTimeout(() => { state.flashLine = -1; }, 1700);
   }
 
+  /** Line ending of the file loaded in a pane ('\r\n' or '\n'). */
+  function getEol(side) {
+    const state = stateFor(side);
+    return (state && state.eol) || '\n';
+  }
+
+  /** Scroll just enough that a line is fully on screen (e.g. after the info panel opens). */
+  function ensureLineVisible(side, lineNum) {
+    const state = stateFor(side);
+    if (!state) return;
+    const row = state.lineToRow[lineNum];
+    if (row === undefined) return;
+    const w = state.wrapper;
+    const top = row * LINE_HEIGHT;
+    if (top + LINE_HEIGHT > w.scrollTop + w.clientHeight) w.scrollTop = top + 2 * LINE_HEIGHT - w.clientHeight;
+    else if (top < w.scrollTop) w.scrollTop = top;
+  }
+
   function setSeparatorCallbacks(side, callbacks) {
     const state = stateFor(side);
     if (!state) return;
@@ -720,7 +744,7 @@ const Editor = (() => {
   }
 
   return {
-    init, getValue, setValue, setFilename, getFilename,
+    init, getValue, setValue, getEol, ensureLineVisible, setFilename, getFilename,
     setDecorations, setAnnotations, setHoverCallback, setCtrlClickCallback, setClickCallback, refresh, flashLine, scrollToLine, setSyncScroll,
     setSeparatorCallbacks, setDropdownState, setTolAllActive,
     getDisplayRow, getTotalRows, getLineCount, loadFileInto,

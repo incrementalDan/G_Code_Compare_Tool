@@ -427,6 +427,7 @@ N120 M30`;
       lastDiffResult = null;
       clearDecorations();
       applyAnnotations();
+      if (typeof HoverHelp !== 'undefined') HoverHelp.refresh();
       updateStatusBar({ workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
       return;
     }
@@ -467,6 +468,7 @@ N120 M30`;
     // Apply decorations and update UI
     applyDecorations();
     applyAnnotations();
+    if (typeof HoverHelp !== 'undefined') HoverHelp.refresh();
   }
 
   // === Variable values shown after macro lines ===
@@ -909,6 +911,7 @@ N120 M30`;
     lastDiffResult = null;
     clearDecorations();
     applyAnnotations();
+    if (typeof HoverHelp !== 'undefined') HoverHelp.refresh();
     updateStatusBar({ workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 }, 0, 0);
   }
 
@@ -917,6 +920,8 @@ N120 M30`;
     const rightText = Editor.getValue('right');
     const leftName = Editor.getFilename('left');
     const rightName = Editor.getFilename('right');
+    const leftEol = Editor.getEol('left');
+    const rightEol = Editor.getEol('right');
 
     // Sides flip, so per-toolpath choices and IF tests no longer apply
     clearAssumptions(false);
@@ -924,8 +929,8 @@ N120 M30`;
     toleranceOffIds.clear();
     currentToolpaths = { left: [], right: [] };
 
-    Editor.setValue('left', rightText);
-    Editor.setValue('right', leftText);
+    Editor.setValue('left', rightText, rightEol);
+    Editor.setValue('right', leftText, leftEol);
     Editor.setFilename('left', rightName);
     Editor.setFilename('right', leftName);
 
@@ -933,7 +938,8 @@ N120 M30`;
   }
 
   function saveFile(side) {
-    const content = Editor.getValue(side);
+    // Write the file's own line endings back (Windows CRLF stays CRLF)
+    const content = Editor.getValue(side).replace(/\r?\n/g, Editor.getEol(side));
     const filename = Editor.getFilename(side);
     const name = (filename && filename !== 'untitled') ? filename : 'untitled.nc';
 
