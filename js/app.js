@@ -340,7 +340,18 @@ N120 M30`;
     if (tp.name) descParts.push(tp.name);
     if (tp.opType) descParts.push(tp.opType);
     const desc = descParts.join(' | ') || 'Section ' + tp.id;
-    return { nNumber, tool, desc };
+    return { nNumber, tool, desc, note: movedNote(tp) };
+  }
+
+  /** "moved: op 2 → op 1 · same code" for a toolpath whose order changed. */
+  function movedNote(tp) {
+    if (!tp.movedPeer) return '';
+    const pos = (t, list) => list.filter(x => x.type === 'toolpath').indexOf(t) + 1;
+    const inLeft = currentToolpaths.left.includes(tp);
+    const l = inLeft ? tp : tp.movedPeer, r = inLeft ? tp.movedPeer : tp;
+    const n = tp.movedDiffs || 0;
+    return `\u2195 moved: op ${pos(l, currentToolpaths.left)} \u2192 op ${pos(r, currentToolpaths.right)} \u00B7 ` +
+      (n ? `${n} line${n === 1 ? '' : 's'} differ` : 'same code');
   }
 
   function buildTpLabel(tp) {
@@ -600,8 +611,21 @@ N120 M30`;
 
   function applyAnnotations() {
     const on = settings.showVarValues && lastDiffResult;
-    Editor.setAnnotations('left', on ? annotationsFor(lastDiffResult.leftParsed) : {});
-    Editor.setAnnotations('right', on ? annotationsFor(lastDiffResult.rightParsed) : {});
+    const left = on ? annotationsFor(lastDiffResult.leftParsed) : {};
+    const right = on ? annotationsFor(lastDiffResult.rightParsed) : {};
+    // Diff notes (arc R vs I/J/K, rotary one turn apart) always show
+    const add = (out, line, note) => { out[line] = out[line] ? out[line] + '   ' + note : note; };
+    for (const op of (lastDiffResult ? lastDiffResult.ops : [])) {
+      if (!op.tokenDiffs) continue;
+      for (const d of op.tokenDiffs) {
+        if (!d.note) continue;
+        const text = '  \u26A0 ' + d.note;
+        if (op.leftIdx !== undefined) add(left, op.leftIdx, text);
+        if (op.rightIdx !== undefined) add(right, op.rightIdx, text);
+      }
+    }
+    Editor.setAnnotations('left', left);
+    Editor.setAnnotations('right', right);
   }
 
   /** 'in' / 'mm' from the first G20 / G21 in a file, or '' if none. */
@@ -890,18 +914,16 @@ N120 M30`;
     updateSettingsIndicator();
     updateDecimalIndicator(leftLines, rightLines);
 
-    // Line count warning
+    // Warnings: line count, toolpath order
     const center = document.getElementById('status-center');
+    const warn = [];
     if (leftLines > 0 && rightLines > 0) {
       const ratio = Math.abs(leftLines - rightLines) / Math.max(leftLines, rightLines);
-      if (ratio > 0.1) {
-        center.textContent = '\u26A0 Line count differs significantly \u2014 verify correct files are loaded';
-      } else {
-        center.textContent = '';
-      }
-    } else {
-      center.textContent = '';
+      if (ratio > 0.1) warn.push('\u26A0 Line count differs significantly \u2014 verify correct files are loaded');
+      const moved = currentToolpaths.left.filter(t => t.movedPeer).length;
+      if (moved) warn.push(`\u26A0 Toolpath order changed (${moved} moved)`);
     }
+    center.textContent = warn.join('   ');
   }
 
   /** Status bar: shows when any compare setting is not the factory default. */

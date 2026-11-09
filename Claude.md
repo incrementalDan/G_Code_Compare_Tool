@@ -133,6 +133,17 @@ Two post layouts. The new one is tried first (`segmentByDividers`):
 - Fallback to G100-only detection if no comment-pairs found
 - Fallback to comment-based sections if no anchors at all
 
+**Diff notes**: a tokenDiff may carry `note` (arcFormat, rotaryWrap). app.js
+applyAnnotations shows it as a grey note after the line on both sides,
+whatever the "Show variable values" setting.
+
+**Moved toolpaths**: crossed pairs (order changed) still become unmatched
+(removed + added), but each gets `movedPeer` (the other file's toolpath) and
+`movedDiffs` (non-equal, non-tolerance lines when the two are compared).
+app.js labels them `↕ moved: op a → op b · same code / n lines differ`
+(labelParts.note, CSS .tp-moved), placeholder says "(moved)", status bar
+centre warns "Toolpath order changed (n moved)".
+
 **Toolpath matching** (`matchToolpaths`):
 - Pass 1: key-based LCS on "NAME|T{toolNumber}" (operation name + tool, so old
   and new layout files of the same job match)
@@ -491,6 +502,8 @@ This list will grow — add new rules to classifyTokens only.
 | Expression same value | minor | Different text, same known value: X#101 vs X1.5 with #101 = 1.5 (exprSame-X) |
 | Params / other words | critical | R/P/Q/L or unrecognized letter difference |
 | Arc R | coordinate (tolerance) | R value change when both lines are G2/G3 (canned cycle R stays critical) |
+| Arc format | coordinate (tolerance) | Same G2/G3, R on one side, I/J/K on the other (arcFormatDiff): radius delta graded by tolerance, note "same arc". Critical if R sign picks the other side of 180°, I/J/K is a full circle, or start point unknown. Plane from trackContext (G17/G18/G19) |
+| Rotary rollover | critical | A/B/C values one full turn apart (field rotaryWrap-X, with note). Kept red: rollover / turn direction |
 | Block delete | critical | / on one side only (unless Ignore block delete) |
 | Coordinate > major | critical | Max delta beyond majorThreshold |
 | N-number | minor | Only when Ignore N-numbers is off |

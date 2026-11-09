@@ -150,6 +150,8 @@ html, body {
   text-overflow: ellipsis;
   color: #6a9955;
 }
+.tp-moved { color: #ffaa33; font-weight: 700; margin-left: 8px; }
+
 .tp-not-in-file {
   color: #888;
   font-style: italic;

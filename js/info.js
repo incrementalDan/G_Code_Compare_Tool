@@ -101,6 +101,12 @@ const Info = (() => {
     <tr><td>Axis or F on one side only, but same as the value already active (e.g. <code>Z-.5</code> repeated)</td><td>${AMBER}</td><td></td></tr>
     <tr><td>X/Y/Z/A/B/C/I/J/K value change, and R on G2/G3 arcs</td><td>by size — see <a href="#info-filters">Tolerance</a></td><td>if over major</td></tr>
     <tr><td>Any axis value change in G91 (incremental) — errors add up</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Same arc written as <code>R</code> on one side, <code>I/J/K</code> on the other (post setting). Radius graded by
+      <a href="#info-filters">Tolerance</a>; R sign checked against the I/J/K arc (R- = more than 180°) in the active plane G17/G18/G19.
+      Grey note: <i>same arc</i></td><td>by size</td><td>if over major</td></tr>
+    <tr><td>R sign picks the other side of 180°, full circle vs R, or start point unknown (cannot confirm)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
+    <tr><td>Rotary A/B/C one full turn apart (<code>A359.999</code> vs <code>A-0.001</code>). Stays red: with rollover off
+      the table turns the long way. Grey note says why</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Characters that are not a word (stray <code>*</code>, mistyped <code>X1..5</code>)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
   </table>
 
@@ -146,6 +152,9 @@ const Info = (() => {
   toolpath if it has an M, T, H, D, S, F, macro, comment, non-motion G, work offset, or <code>/</code>.
   An added or removed <b>move</b> (rapid, feed, arc, cycle position) inside a matched toolpath
   also always shows. Only a <b>whole</b> added or removed toolpath stays hidden when you hide it.</p>
+  <p><b>Toolpath order changed:</b> a toolpath that moved shows as removed in one place and added in the other
+  (order matters on the machine). Its label says <b>↕ moved: op 6 → op 5</b> and whether the code is the
+  <b>same</b> or how many lines differ. The status bar warns <b>Toolpath order changed</b>.</p>
 </section>
 
 <section id="info-filters" class="info-card">
@@ -326,7 +335,7 @@ const Info = (() => {
     <tr><td>Centre gutter</td><td>Marks show where diffs are. Click to jump.</td></tr>
     <tr><td>Toolpath header bar</td><td>Shows the current toolpath. Click for the list; click a row to jump.</td></tr>
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
-      Warns if line counts differ by more than 10%. Right side: control, units per file
+      Warns if line counts differ by more than 10% and if the toolpath order changed. Right side: control, units per file
       (G20 inch / G21 mm — red if they differ), <b>No-decimal check</b> (ON/OFF + lines without a decimal; click to step
       through them), <b>Settings</b> (amber “⚠ Settings changed” when any compare setting or threshold is not the default —
       point at it for the list, click to open settings), and the pane, line and column of the cursor.</td></tr>
