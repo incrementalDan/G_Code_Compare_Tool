@@ -27,6 +27,7 @@ gcode-compare/
 │   ├── editor.js       — single-layer line-div editor, rendering, decorations, hover hook
 │   ├── app.js          — UI wiring, settings, state, diff coordination
 │   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
+│   ├── changes.js      — Changes popup: grouped summary (feeds, shifts, lead-ins) per toolpath
 │   ├── tools.js        — Tool Table: tool list / gauge / usage / fixture compare + popup
 │   ├── info.js         — in-app Info popup: what is / isn't checked
 │   └── hover-help.js   — bottom info panel: meaning/values of G/M/words/#vars + Zappettini wiki links
@@ -156,6 +157,14 @@ centre warns "Toolpath order changed (n moved)".
   matched pair that follows it in its own file
 - Produces matched pairs { left, right } plus unmatched left/right entries
 
+**Compared line ranges** (`computeSemanticDiff`): each toolpath's lines are
+compared from its header line (anchorLine) to the line before the next header
+(diffStart / diffEnd), not from the expanded startLine. Old posts pull setup
+lines (IF/GOTO pallet block, M09 M05 G28 ...) above the header into the next
+toolpath; new posts keep them before the divider. Using the header as the
+datum keeps the same lines in the same compared range. The first toolpath
+keeps its startLine. startLine is still used for Hide / TOL ranges.
+
 **Fingerprinting** (`fingerprint`):
 - Structural signature for LCS matching: G-codes, M-codes, axis letters present,
   arc params, rotary, F/S/T/H/D presence, macro presence
@@ -204,6 +213,27 @@ Whole added/removed toolpaths do not.
 **Pairing changed lines** (`classifyOps`): removed and added lines in the same
 gap are paired only if they are the same kind (share at least half their word
 letters, or both comment-only). Others stay as plain removed / added.
+A tool list line `(T02 - ...)` pairs only with the same tool number, and a
+`(-----)` divider only with a divider, so an extra line can't shift the list.
+
+**One-sided label / header comments** (`oneSidedOp`): a comment-only line on one
+side whose role is label or header (found by position: file top, or between a
+toolpath header and its first code line) becomes op type 'ignored'. Shown faintly
+(diff-bg-ignored), not counted, not navigated. Tool, fixture, note and
+commented-out-code lines are still flagged.
+
+**Change summary** (`summarizeChanges(result, { minShift })`): one entry per
+tpMatch, using match.opStart / opEnd (set in computeSemanticDiff).
+- feeds: every F change grouped by from -> to, with pct; sorted by biggest |pct|
+- shifts: same delta (4 places) on one axis X/Y/Z across paired lines, |delta| >=
+  minShift (app passes the minor threshold, 0.001) and >= 3 lines. 'shifted Z' tag
+  only when it covers at least half of that axis's paired lines
+- leadIn: arc <-> line or plane change on a vertical-plane move (G18/G19 or K arc);
+  added/removed lines within 3 ops of one count as lead-in too
+- recalculated: >= 20 motion lines and one-sided motion lines >= max(20, 10%)
+- other: flagged lines none of the above explain
+- tags: no change / feeds / shifted XYZ / lead-in / recalculated / N other /
+  only in left|right. Shown on header bars (labelParts.status) and in Changes popup.
 
 **Stats** (`countStats`): counts critical (incl. workoffset), minor, added, removed.
 Not used by the UI — app.js counts only what is actually displayed.
@@ -285,14 +315,20 @@ Not used by the UI — app.js counts only what is actually displayed.
 - Calls applyDecorations
 
 **Decoration application** (`applyDecorations`):
-- Builds left/right decoration arrays and alignment padding from diff ops
+- Builds left/right decoration arrays from diff ops
 - Hidden toolpath ops are skipped unless op.alwaysShow
 - effectiveType: 'tolerance' becomes 'minor' when that toolpath's TOL is off;
   every other type passes through unchanged
 - One-sided ops with workOffset are decorated as workoffset
 - Builds leftSeparators / rightSeparators keyed by anchorLine
 - Adds placeholder separators for unmatched toolpaths on the opposite side
-- Equalizes total display line counts between panes (accounts for padding + separators)
+- Padding comes from `DiffEngine.alignRows`: it measures display rows (lines, blank
+  lines, header bars, padding) and pads the shorter side at each sync point.
+  Sync points = matched toolpath header pairs (win first) + every op with both sides.
+  Points that go backwards or cross a header are skipped. Trailing padding evens the totals.
+  A line pair may use the line right under a lined-up header bar (old post label
+  vs new post line after its divider); its gap goes below the bar
+  (leftBelowSep / rightBelowSep -> Editor sepPadding).
 - Updates center gutter diff markers
 - Counts stats from what is actually decorated (hidden and tolerance diffs not counted)
 - Updates status bar

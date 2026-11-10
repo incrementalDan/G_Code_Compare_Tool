@@ -78,6 +78,7 @@ const Editor = (() => {
       filename: 'untitled',
       annotations: {},      // line index -> short text shown after the line (variable values)
       alignmentPadding: {},
+      sepPadding: {},        // padding rows drawn just below a line's header bar
       toolpathSeparators: {},
       separatorPositions: [], // [{id, label, disabled, offsetTop}]
       dropdownOpen: false,
@@ -333,9 +334,14 @@ const Editor = (() => {
       const placeholderSuffix = isPlaceholder
         ? ` <span class="tp-not-in-file">(${parts.note ? 'moved' : 'not in file'})</span>` : '';
       const note = parts.note ? ` <span class="tp-moved">${escapeHtml(parts.note)}</span>` : '';
+      // Status tags from the change summary (no change / feeds / shifted Z / lead-in / ...)
+      const status = (parts.status || []).map(t => {
+        const cls = t === 'no change' ? ' tp-status-ok' : /recalculated|only in/.test(t) ? ' tp-status-big' : '';
+        return `<span class="tp-status${cls}">${escapeHtml(t)}</span>`;
+      }).join('');
       return `<span class="tp-n-num">${escapeHtml(parts.nNumber)}</span>` +
         `<span class="tp-tool">${escapeHtml(parts.tool)}</span>` +
-        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}${note}</span>`;
+        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}${note}</span>${status}`;
     }
     return `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>`;
   }
@@ -350,7 +356,7 @@ const Editor = (() => {
 
   /**
    * Rebuild the row model (cheap: no HTML) and draw the visible window.
-   * Row order per line must stay: padding rows, then separator, then the line.
+   * Row order per line must stay: padding rows, separator, padding below it, then the line.
    */
   function render(state) {
     const lines = state.content.split('\n');
@@ -362,7 +368,11 @@ const Editor = (() => {
     for (let i = 0; i < lines.length; i++) {
       const padding = state.alignmentPadding[i] || 0;
       for (let p = 0; p < padding; p++) rows.push({ kind: 'pad', line: i });
-      if (state.toolpathSeparators[i]) rows.push({ kind: 'sep', line: i });
+      if (state.toolpathSeparators[i]) {
+        rows.push({ kind: 'sep', line: i });
+        const below = state.sepPadding[i] || 0;
+        for (let p = 0; p < below; p++) rows.push({ kind: 'pad', line: i });
+      }
       lineToRow[i] = rows.length;
       rows.push({ kind: 'line', line: i });
       if (lines[i].length > maxLen) maxLen = lines[i].length;
@@ -619,7 +629,7 @@ const Editor = (() => {
     render(state);
   }
 
-  function setDecorations(side, decorations, padding, disabledLines, separators) {
+  function setDecorations(side, decorations, padding, disabledLines, separators, sepPadding) {
     const state = stateFor(side);
     if (!state) return;
     state.decorations = {};
@@ -627,6 +637,7 @@ const Editor = (() => {
       state.decorations[d.line] = { type: d.type, tokenDiffs: d.tokenDiffs || null };
     }
     state.alignmentPadding = padding || {};
+    state.sepPadding = sepPadding || {};
     state.disabledLines = disabledLines || new Set();
     state.toolpathSeparators = separators || {};
     render(state);

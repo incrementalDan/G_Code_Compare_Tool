@@ -44,6 +44,8 @@ const App = (() => {
   let currentDiffIndex = -1;
   let currentToolpaths = { left: [], right: [] };
   let currentTpMatches = []; // toolpath match pairs from diff engine
+  let summaryByTp = new Map(); // toolpath -> DiffEngine.summarizeChanges entry
+  let lastSummaries = [];
   let lastDiffResult = null; // full engine result (parsed lines, toolpaths) for Feeds & Speeds
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
@@ -332,15 +334,17 @@ N120 M30`;
 
   // === Toolpath helpers ===
   function buildTpLabelParts(tp) {
-    if (tp.type === 'preamble') return { nNumber: '', tool: '', desc: 'Program Header' };
-    if (tp.type === 'program_end') return { nNumber: '', tool: '', desc: 'Program End' };
+    const tags = (summaryByTp.get(tp) || {}).tags || [];
+    if (tp.type === 'preamble') return { nNumber: '', tool: '', desc: 'Program Header', status: tags };
+    if (tp.type === 'program_end') return { nNumber: '', tool: '', desc: 'Program End', status: tags };
     const nNumber = tp.nNumber || '';
     const tool = tp.toolNumber !== null ? 'T' + tp.toolNumber : '';
     const descParts = [];
     if (tp.name) descParts.push(tp.name);
     if (tp.opType) descParts.push(tp.opType);
     const desc = descParts.join(' | ') || 'Section ' + tp.id;
-    return { nNumber, tool, desc, note: movedNote(tp) };
+    const sum = summaryByTp.get(tp);
+    return { nNumber, tool, desc, note: movedNote(tp), status: sum ? sum.tags : [] };
   }
 
   /** "moved: op 2 → op 1 · same code" for a toolpath whose order changed. */
@@ -489,6 +493,13 @@ N120 M30`;
     const prevToolpaths = currentToolpaths;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
     currentTpMatches = diffResult.tpMatches || [];
+    // Grouped change summary; a uniform shift must be at least the minor threshold
+    lastSummaries = DiffEngine.summarizeChanges(diffResult, { minShift: settings.minorThreshold });
+    summaryByTp = new Map();
+    for (const s of lastSummaries) {
+      if (s.left) summaryByTp.set(s.left, s);
+      if (s.right) summaryByTp.set(s.right, s);
+    }
 
     // Carry hide/TOL choices over to the new toolpath list (matched by name)
     const prevDisabled = idsToKeys(disabledToolpathIds, prevToolpaths);
@@ -674,12 +685,7 @@ N120 M30`;
 
     const leftDecos = [];
     const rightDecos = [];
-    const leftPadding = {};
-    const rightPadding = {};
     diffPositions = [];
-
-    let leftPendingPad = 0;
-    let rightPendingPad = 0;
 
     // Stats count only what is actually shown
     const stats = { workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 };
@@ -688,28 +694,11 @@ N120 M30`;
       const op = currentDiff[i];
       const disabled = isOpDisabled(op);
 
-      // Toolpath boundary flush — always, even for disabled ops
-      if (op.leftIdx !== undefined) {
-        const leftTp = getToolpathForLine(op.leftIdx, currentToolpaths.left);
-        if (leftTp && leftTp.startLine === op.leftIdx && leftPendingPad > 0) {
-          leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
-          leftPendingPad = 0;
-        }
-      }
-      if (op.rightIdx !== undefined) {
-        const rightTp = getToolpathForLine(op.rightIdx, currentToolpaths.right);
-        if (rightTp && rightTp.startLine === op.rightIdx && rightPendingPad > 0) {
-          rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
-          rightPendingPad = 0;
-        }
-      }
-
       // Resolve effective type considering per-toolpath tolerance setting
       const etype = effectiveType(op);
 
-      // One-sided ops: always count padding (even if disabled), optionally skip decoration
+      // One-sided ops: optionally skip decoration
       if (etype === 'added') {
-        leftPendingPad++;
         if (disabled && !op.alwaysShow) continue;
         rightDecos.push({ line: op.rightIdx, type: op.workOffset ? 'workoffset' : 'added' });
         diffPositions.push(i);
@@ -717,11 +706,18 @@ N120 M30`;
         continue;
       }
       if (etype === 'removed') {
-        rightPendingPad++;
         if (disabled && !op.alwaysShow) continue;
         leftDecos.push({ line: op.leftIdx, type: op.workOffset ? 'workoffset' : 'removed' });
         diffPositions.push(i);
         if (op.workOffset) stats.workoffset++; else stats.removed++;
+        continue;
+      }
+
+      // Header / label comment on one side only: faint mark, not counted or navigated
+      if (etype === 'ignored') {
+        if (disabled) continue;
+        if (op.leftIdx !== undefined) leftDecos.push({ line: op.leftIdx, type: 'ignored' });
+        else rightDecos.push({ line: op.rightIdx, type: 'ignored' });
         continue;
       }
 
@@ -730,15 +726,6 @@ N120 M30`;
 
       const hasBothSides = op.leftIdx !== undefined && op.rightIdx !== undefined;
       if (etype === 'equal' || hasBothSides) {
-        // Flush pending padding
-        if (leftPendingPad > 0 && op.leftIdx !== undefined) {
-          leftPadding[op.leftIdx] = (leftPadding[op.leftIdx] || 0) + leftPendingPad;
-          leftPendingPad = 0;
-        }
-        if (rightPendingPad > 0 && op.rightIdx !== undefined) {
-          rightPadding[op.rightIdx] = (rightPadding[op.rightIdx] || 0) + rightPendingPad;
-          rightPendingPad = 0;
-        }
         if (etype !== 'equal') {
           const dt = decoType(etype);
           leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
@@ -752,14 +739,6 @@ N120 M30`;
           }
         }
       }
-    }
-
-    // Trailing padding
-    if (leftPendingPad > 0) {
-      leftPadding[leftLineCount] = (leftPadding[leftLineCount] || 0) + leftPendingPad;
-    }
-    if (rightPendingPad > 0) {
-      rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + rightPendingPad;
     }
 
     // Build toolpath separator data for inline display
@@ -789,11 +768,15 @@ N120 M30`;
 
     // Add placeholder separators for unmatched toolpaths on the opposite side.
     // IDs match the real toolpath convention so isOpDisabled() works without changes.
+    // Each header pair is also a sync point so the bars sit side by side.
+    const sepLineOf = tp => (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
+    const headerPoints = [];
     for (const match of currentTpMatches) {
       if (match.left && !match.right) {
         let rightLine = findCorrespondingLine(match, 'right', currentTpMatches, rightLineCount);
         while (rightLine > 0 && rightSeparators[rightLine]) rightLine--;
         if (!rightSeparators[rightLine]) {
+          headerPoints.push([sepLineOf(match.left), rightLine]);
           rightSeparators[rightLine] = {
             id: String(match.left.id),
             label: buildTpLabel(match.left) + ' (not in file)',
@@ -807,6 +790,7 @@ N120 M30`;
         let leftLine = findCorrespondingLine(match, 'left', currentTpMatches, leftLineCount);
         while (leftLine > 0 && leftSeparators[leftLine]) leftLine--;
         if (!leftSeparators[leftLine]) {
+          headerPoints.push([leftLine, sepLineOf(match.right)]);
           leftSeparators[leftLine] = {
             id: 'R' + match.right.id,
             label: buildTpLabel(match.right) + ' (not in file)',
@@ -819,23 +803,15 @@ N120 M30`;
       }
     }
 
-    // Final equalization: guarantee both panes have identical total display line counts.
-    // Formula must match render(): totalDisplayLines = lineCount + padTotal + sepCount
-    const leftPadTotal = Object.values(leftPadding).reduce((a, b) => a + b, 0);
-    const rightPadTotal = Object.values(rightPadding).reduce((a, b) => a + b, 0);
-    const leftSepCount = Object.keys(leftSeparators).length;
-    const rightSepCount = Object.keys(rightSeparators).length;
-    const leftTotal = leftLineCount + leftPadTotal + leftSepCount;
-    const rightTotal = rightLineCount + rightPadTotal + rightSepCount;
-
-    if (leftTotal < rightTotal) {
-      leftPadding[leftLineCount] = (leftPadding[leftLineCount] || 0) + (rightTotal - leftTotal);
-    } else if (rightTotal < leftTotal) {
-      rightPadding[rightLineCount] = (rightPadding[rightLineCount] || 0) + (leftTotal - rightTotal);
+    for (const match of currentTpMatches) {
+      if (match.left && match.right) headerPoints.push([sepLineOf(match.left), sepLineOf(match.right)]);
     }
 
-    Editor.setDecorations('left', leftDecos, leftPadding, leftDisabled, leftSeparators);
-    Editor.setDecorations('right', rightDecos, rightPadding, rightDisabled, rightSeparators);
+    // Padding rows so matched lines and header bars share a screen row
+    const pad = DiffEngine.alignRows(currentDiff, leftLineCount, rightLineCount,
+      leftSeparators, rightSeparators, headerPoints);
+    Editor.setDecorations('left', leftDecos, pad.left, leftDisabled, leftSeparators, pad.leftBelowSep);
+    Editor.setDecorations('right', rightDecos, pad.right, rightDisabled, rightSeparators, pad.rightBelowSep);
 
     // Update diff markers in center gutter
     updateDiffMarkers();
@@ -1101,5 +1077,8 @@ N120 M30`;
     return lastDiffResult;
   }
 
-  return { runDiff, loadExample, getDiffContext, setAssumption, jumpTo };
+  /** Grouped change summary from the last compare (used by the Changes popup). */
+  function getSummaries() { return lastSummaries; }
+
+  return { runDiff, loadExample, getDiffContext, getSummaries, setAssumption, jumpTo };
 })();

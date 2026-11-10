@@ -569,5 +569,122 @@ test('IF THEN can be tested', () => {
   eq(resolveA(L, new Map([[1, { raw: L[1], value: true }]]))[2].resolved.X, 7);
 });
 
+console.log('\nSide-by-side alignment');
+// Display row of each line, built the same way the editor draws it
+function rowsOf(count, pad, seps, below = {}) {
+  const rows = []; let r = 0;
+  for (let i = 0; i < count; i++) { r += (pad[i] || 0) + (seps[i] ? 1 + (below[i] || 0) : 0); rows.push(r++); }
+  return { rows, total: r + (pad[count] || 0) };
+}
+function checkAligned(left, right, lseps = {}, rseps = {}, headers = []) {
+  const d = diff(left, right);
+  const pad = DE.alignRows(d.ops, left.length, right.length, lseps, rseps, headers);
+  const L = rowsOf(left.length, pad.left, lseps, pad.leftBelowSep), R = rowsOf(right.length, pad.right, rseps, pad.rightBelowSep);
+  for (const o of d.ops) {
+    if (o.leftIdx === undefined || o.rightIdx === undefined) continue;
+    if (L.rows[o.leftIdx] !== R.rows[o.rightIdx]) throw new Error(`L${o.leftIdx + 1} row ${L.rows[o.leftIdx]} vs R${o.rightIdx + 1} row ${R.rows[o.rightIdx]}`);
+  }
+  eq(L.total, R.total);
+  return { L, R };
+}
+test('blank lines on one side keep lines aligned', () =>
+  checkAligned(['G0 X1.', 'G0 Y1.', 'G0 Z1.'], ['G0 X1.', '', '', '', 'G0 Y1.', '', 'G0 Z1.']));
+test('added and removed lines keep lines aligned', () =>
+  checkAligned(['G0 X1.', 'M08', 'G0 Y1.', 'G0 Z1.'], ['G0 X1.', 'G0 Y1.', 'M09', 'M05', 'G0 Z1.']));
+test('header bar on one side only keeps lines aligned', () =>
+  checkAligned(['G0 X1.', 'G0 Y1.'], ['G0 X1.', 'G0 Y1.'], { 1: {} }, {}));
+test('header bars line up side by side', () => {
+  const { L, R } = checkAligned(['G0 X1.', '', 'M08', 'G0 Y1.'], ['G0 X1.', 'G0 Y1.'], { 3: {} }, { 1: {} }, [[3, 1]]);
+  eq(L.rows[3], R.rows[1]);
+});
+test('header beats a line pair that crosses it', () => {
+  const pad = DE.alignRows([{ leftIdx: 0, rightIdx: 3 }], 4, 4, { 2: {} }, { 1: {} }, [[2, 1]]);
+  const L = rowsOf(4, pad.left, { 2: {} }), R = rowsOf(4, pad.right, { 1: {} });
+  eq(L.rows[2], R.rows[1]);
+});
+test('gap goes below the header bar when a header line pairs past the other header', () => {
+  // Left: header bar on line 0. Right: header bar on line 0 (a divider), then line 1 pairs with left 0.
+  const pad = DE.alignRows([{ leftIdx: 0, rightIdx: 1 }, { leftIdx: 1, rightIdx: 2 }], 2, 3, { 0: {} }, { 0: {} }, [[0, 0]]);
+  const L = rowsOf(2, pad.left, { 0: {} }, pad.leftBelowSep), R = rowsOf(3, pad.right, { 0: {} }, pad.rightBelowSep);
+  eq([L.rows[0], L.rows[1]].join(',') + ' / ' + [R.rows[1], R.rows[2]].join(','), '2,3 / 2,3');
+  eq(pad.leftBelowSep[0], 1);
+});
+
+console.log('\nOld post vs new post');
+// Old post: blank line + comment pair starts a toolpath; setup lines sit above it.
+// New post: a (-----) divider starts each toolpath.
+const OLD_POST = [
+  '(O1 TEST)', '(T25 - FACE MILL - OOH=1.3)', '(T08 - FACE MILL - OOH=1.3)',
+  'G90', 'IF [#5024 GT -90.] GOTO 2000', '#153 = 7', 'GOTO3000', 'N2000', '#153 = 8', 'N3000', 'G28 G91 Z0', 'G90',
+  '', '(OP61 FACE MILL)', '(ROUGH FACE)', 'G54.1 P#153', 'N10 G100 T25 X1. Y1. G43 Z5. H25 S764 M03',
+  'G00 Z1.', 'G01 Y-4. F20.', 'G00 Z5.', 'M09', 'M05', 'G28 G91 Z0', 'G90',
+  '', '(OP61 FACE MILL)', '(FINISH FACE)', 'G54.1 P#153', 'N15 G100 T8 X1. Y1. G43 Z5. H8 S900 M03',
+  'G00 Z1.', 'G01 Y-4. F15.', 'G00 Z5.', 'M09', 'M05', 'G28 G91 Z0', 'G90', 'M30'
+];
+const NEW_POST = [
+  '(O1 TEST)', '(-----------------------)', '(T25 - FACE MILL - OOH=1.3)', '(T08 - FACE MILL - OOH=1.3)', '(-----------------------)',
+  'G90', 'IF [#5024 GT -90.] GOTO 2000', '#153 = 7', 'GOTO3000', 'N2000', '#153 = 8', 'N3000', 'G28 G91 Z0', 'G90', '', '',
+  '(-----------------------)', '(OP62 FACE MILL)', '(ROUGH FACE)', '(FACE)', 'G54.1 P#153', 'N10 G100 T25 X1. Y1. G43 Z5. H25 S764 M03',
+  'G00 Z1.', 'G01 Y-4. F20.', 'G00 Z5.', 'M09', 'M05', 'G28 G91 Z0', 'G90', '',
+  '(-----------------------)', '(OP62 FACE MILL)', '(FINISH FACE)', '(FACE)', 'G54.1 P#153', 'N15 G100 T8 X1. Y1. G43 Z5. H8 S900 M03',
+  'G00 Z1.', 'G01 Y-4. F15.', 'G00 Z5.', 'M09', 'M05', 'G28 G91 Z0', 'G90', 'M30'
+];
+test('layouts are detected as old and new', () => {
+  const d = diff(OLD_POST, NEW_POST);
+  eq(d.leftToolpaths.find(t => t.type === 'toolpath').layout + ' ' + d.rightToolpaths.find(t => t.type === 'toolpath').layout, 'blank-comments divider');
+});
+test('setup block above first toolpath matches across posts', () => {
+  const d = diff(OLD_POST, NEW_POST);
+  const op = d.ops.find(o => o.leftIdx === 4);
+  eq(op && op.type + ' ' + op.rightIdx, 'equal 6');
+});
+test('tool change ending lines match across posts', () => {
+  const d = diff(OLD_POST, NEW_POST);
+  const bad = d.ops.filter(o => (o.type === 'added' || o.type === 'removed') &&
+    /^(M09|M05|G28 G91 Z0)$/.test(o.leftLine || o.rightLine));
+  eq(bad.length, 0);
+});
+test('tool list lines pair by tool number', () => {
+  const d = diff(OLD_POST, NEW_POST.map(l => l.replace('OOH=1.3', 'OOH=1.4')));
+  const pairs = d.ops.filter(o => o.leftIdx === 1 || o.leftIdx === 2).map(o => o.leftIdx + '-' + o.rightIdx);
+  eq(pairs.join(','), '1-2,2-3');
+});
+
+test('label comments on one side only are ignored', () => {
+  const d = diff(OLD_POST, NEW_POST);
+  const flagged = d.ops.filter(o => o.type === 'added' && /^\(/.test(o.rightLine)).map(o => o.rightLine);
+  eq(flagged.join(','), '');
+  eq(d.ops.filter(o => o.type === 'ignored').length > 0, true);
+});
+test('note added inside code still shows', () => {
+  const d = diff(OLD_POST, NEW_POST.map(l => l === 'G01 Y-4. F20.' ? '(CHANGE FEED HERE)\nG01 Y-4. F20.' : l).join('\n').split('\n'));
+  eq(d.ops.some(o => o.type === 'added' && o.rightLine === '(CHANGE FEED HERE)'), true);
+});
+
+console.log('\nChange summary');
+const sumOf = (L, R, minShift = 0.001) => DE.summarizeChanges(diff(L, R), { minShift });
+const tpSum = (L, R) => sumOf(L, R).find(s => s.left && s.left.type === 'toolpath');
+const swap = (from, to) => OLD_POST.map(l => l === from ? to : l);
+test('unchanged toolpath says no change', () => eq(tpSum(OLD_POST, NEW_POST).tags.join(','), 'no change'));
+test('feed change grouped with % change', () => {
+  const s = tpSum(OLD_POST, swap('G01 Y-4. F20.', 'G01 Y-4. F40.'));
+  eq(s.tags.join(',') + ' ' + s.feeds[0].from + '>' + s.feeds[0].to + ' ' + Math.round(s.feeds[0].pct), 'feeds 20>40 100');
+});
+test('uniform Z shift is called out once', () => {
+  const R = OLD_POST.map(l => l.replace(/Z(\d+\.?\d*)/, (m, v) => 'Z' + (+v - 0.002).toFixed(4)));
+  const s = tpSum(OLD_POST, R);
+  eq(s.tags.includes('shifted Z') && s.shifts[0].delta === -0.002, true);
+  eq(s.other, 0);
+});
+test('shift below the limit is not a shift', () => {
+  const R = OLD_POST.map(l => l.replace(/Z(\d+\.?\d*)/, (m, v) => 'Z' + (+v - 0.0005).toFixed(4)));
+  eq(tpSum(OLD_POST, R).shifts.length, 0);
+});
+test('vertical arc lead-in swapped for a line is tagged lead-in', () => {
+  const L = swap('G00 Z1.', 'G00 Z1.\nG19 G03 Y1. Z0.5 K0.01 F20.').join('\n').split('\n');
+  const R = swap('G00 Z1.', 'G00 Z1.\nG01 Y1. Z0.49 F20.').join('\n').split('\n');
+  eq(tpSum(L, R).tags.includes('lead-in'), true);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -348,6 +348,7 @@ const DiffEngine = (() => {
   //   note   — any other comment, incl. comments on code lines -> critical
   //   label  — divider and toolpath label comments             -> ignored
   //   header — comment block at the top of the file (name, date, machine) -> ignored
+  //   (label / header lines on one side only become op type 'ignored')
   //   fixture — (FIXTURE = ...) line: critical only when BOTH files have one and they differ
   // Labels and header are covered elsewhere (toolpath name, T words, tool lines).
 
@@ -379,6 +380,13 @@ const DiffEngine = (() => {
       p._cc = ok ? q : null;
     }
     return p._cc;
+  }
+
+  /** Tool number of a tool list comment like "(T02 - 1/8 CHAMFER ...)", else null. */
+  function toolCommentNum(p) {
+    if (!p.isCommentOnly) return null;
+    const m = (p.comment || '').trim().match(/^T(\d+)\s*-/i);
+    return m ? parseInt(m[1], 10) : null;
   }
 
   function commentRole(p, rules) {
@@ -1957,17 +1965,32 @@ const DiffEngine = (() => {
 
     const allOps = [];
 
+    // Diff ranges run from header to header (anchor line), not from the
+    // expanded preamble start. Posts put setup lines on different sides of
+    // the header, so this keeps the same lines in the same compared range.
+    const setRanges = (tps, count) => {
+      const starts = tps.map(t => (t.anchorLine >= 0 ? t.anchorLine : t.startLine));
+      for (let k = 0; k < tps.length; k++) {
+        const s = k === 0 ? tps[0].startLine : starts[k];
+        let e = k + 1 < tps.length ? starts[k + 1] - 1 : count - 1;
+        tps[k].diffStart = s;
+        tps[k].diffEnd = Math.max(s - 1, e);
+      }
+    };
+    setRanges(leftToolpaths, leftLines.length);
+    setRanges(rightToolpaths, rightLines.length);
+
     const diffPair = (match) => {
         // Build fingerprints for this segment only
         const segLeftFP = [], segLeftKey = [], segLeftIdxMap = [];
-        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
+        for (let i = match.left.diffStart; i <= match.left.diffEnd; i++) {
           if (leftParsed[i].isBlank) continue;
           segLeftFP.push(fingerprint(leftParsed[i], rules, leftModal[i]));
           segLeftKey.push(lineKey(leftParsed[i]));
           segLeftIdxMap.push(i);
         }
         const segRightFP = [], segRightKey = [], segRightIdxMap = [];
-        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
+        for (let i = match.right.diffStart; i <= match.right.diffEnd; i++) {
           if (rightParsed[i].isBlank) continue;
           segRightFP.push(fingerprint(rightParsed[i], rules, rightModal[i]));
           segRightKey.push(lineKey(rightParsed[i]));
@@ -1994,21 +2017,23 @@ const DiffEngine = (() => {
     }
 
     for (const match of tpMatches) {
+      match.opStart = allOps.length;
       if (match.left && match.right) {
         allOps.push(...diffPair(match));
       } else if (match.left) {
         // Entire toolpath removed
-        for (let i = match.left.startLine; i <= match.left.endLine; i++) {
+        for (let i = match.left.diffStart; i <= match.left.diffEnd; i++) {
           if (leftParsed[i].isBlank) continue;
           allOps.push(oneSidedOp('removed', i, leftLines, leftParsed, rules));
         }
       } else {
         // Entire toolpath added
-        for (let i = match.right.startLine; i <= match.right.endLine; i++) {
+        for (let i = match.right.diffStart; i <= match.right.diffEnd; i++) {
           if (rightParsed[i].isBlank) continue;
           allOps.push(oneSidedOp('added', i, rightLines, rightParsed, rules));
         }
       }
+      match.opEnd = allOps.length;
     }
 
     // Grade coordinate diffs by tolerance
@@ -2041,6 +2066,11 @@ const DiffEngine = (() => {
     if (cb && !pa.isCommentOnly) return sameKind(pa, cb, rules);
     // A fixture line only pairs with a fixture line
     if (isFixtureComment(pa) !== isFixtureComment(pb)) return false;
+    // A tool list line only pairs with the same tool (T02 with T02)
+    const ta = toolCommentNum(pa), tb = toolCommentNum(pb);
+    if (ta !== null || tb !== null) return ta === tb;
+    // A (-----) divider only pairs with a divider
+    if (isDivider(pa) !== isDivider(pb)) return false;
     if (pa.isCommentOnly && pb.isCommentOnly) return true;
     const a = wordLetters(pa), b = wordLetters(pb);
     if (a.size === 0 || b.size === 0) return false;
@@ -2058,6 +2088,15 @@ const DiffEngine = (() => {
     const op = type === 'added'
       ? { type, rightIdx: idx, rightLine: lines[idx] }
       : { type, leftIdx: idx, leftLine: lines[idx] };
+    // File header and toolpath label comments are found by where they sit
+    // (above the first code line), not by their text. On one side only they
+    // are post layout, not a change: keep the line but don't flag it.
+    const role = parsed[idx].isCommentOnly ? commentRole(parsed[idx], rules) : null;
+    if (role === 'label' || role === 'header') {
+      op.oneSided = type;
+      op.type = 'ignored';
+      return op;
+    }
     if (hasCriticalContent(parsed[idx], rules)) op.alwaysShow = true;
     const p = parsed[idx];
     const moves = Object.keys(p.axes).length + Object.keys(p.rotary).length + Object.keys(p.arcParams).length > 0;
@@ -2154,6 +2193,247 @@ const DiffEngine = (() => {
   }
 
   // =====================================================
+  // Change summary (per matched toolpath)
+  // =====================================================
+
+  const FLAGGED_TYPES = new Set(['critical', 'minor', 'workoffset', 'added', 'removed']);
+  const round4 = v => Math.round(v * 10000) / 10000;
+
+  /** Vertical-plane move: G18/G19 on the line, or a K arc word (XZ / YZ arc). */
+  function isVerticalArc(p) {
+    if (!p) return false;
+    if (p.gCodes.some(g => { const n = codeNum(g); return n === 18 || n === 19; })) return true;
+    return p.arcParams.K !== undefined;
+  }
+
+  /**
+   * Group a diff result into one summary per toolpath pair, so repeated
+   * changes read as one decision:
+   *   feeds   — every F change, grouped by from -> to, with % change
+   *   shifts  — one axis moved by the same amount on many lines
+   *   leadIn  — arc swapped for a line (or plane change) on a vertical-plane move
+   *   recalculated — a large share of the motion lines exist on one side only
+   *   other   — flagged lines none of the above explain
+   * opts.minShift: smallest uniform shift worth calling out (inch/mm).
+   */
+  function summarizeChanges(result, opts = {}) {
+    const minShift = opts.minShift || 0.001;
+    const { ops, tpMatches, leftParsed, rightParsed } = result;
+    const summaries = [];
+
+    for (const match of tpMatches) {
+      const list = ops.slice(match.opStart || 0, match.opEnd || 0);
+      const sum = {
+        left: match.left || null, right: match.right || null,
+        flagged: 0, feeds: [], shifts: [], leadIn: null, recalculated: false, other: 0,
+        otherFirst: -1, tags: []
+      };
+      const base = match.opStart || 0;
+      const feedMap = new Map();
+      const axisDeltas = { X: new Map(), Y: new Map(), Z: new Map() };
+      const axisTotal = { X: 0, Y: 0, Z: 0 };
+      let motionLines = 0, oneSidedMotion = 0, leadCount = 0, leadFirst = -1;
+
+      list.forEach((op, k) => {
+        const at = base + k;
+        const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
+        const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
+        const moves = p => p && (Object.keys(p.axes).length + Object.keys(p.arcParams).length) > 0;
+        if (moves(pl) || moves(pr)) motionLines++;
+        if (pl && pr) {
+          for (const a of ['X', 'Y', 'Z']) {
+            const lv = pl.axes[a], rv = pr.axes[a];
+            if (typeof lv !== 'number' || typeof rv !== 'number') continue;
+            axisTotal[a]++;
+            const dv = round4(rv - lv);
+            const g = axisDeltas[a].get(dv) || { count: 0, first: at };
+            g.count++;
+            axisDeltas[a].set(dv, g);
+          }
+        }
+        if (!FLAGGED_TYPES.has(op.type)) return;
+        sum.flagged++;
+        for (const t of op.tokenDiffs || []) {
+          if (t.field !== 'feed' || t.severity === 'equal') continue;
+          const key = t.leftVal + '>' + t.rightVal;
+          const g = feedMap.get(key) || { from: t.leftVal, to: t.rightVal, count: 0, first: at };
+          g.count++;
+          feedMap.set(key, g);
+        }
+      });
+
+      // Uniform shifts: a delta shared by many lines on one axis
+      for (const a of ['X', 'Y', 'Z']) {
+        for (const [delta, g] of axisDeltas[a]) {
+          if (Math.abs(delta) < minShift - 1e-9 || g.count < 3) continue;
+          sum.shifts.push({ axis: a, delta, count: g.count, total: axisTotal[a], first: g.first,
+            most: g.count >= axisTotal[a] / 2 });
+        }
+      }
+      sum.shifts.sort((x, y) => y.count - x.count);
+      const shiftKey = new Set(sum.shifts.map(sh => sh.axis + sh.delta));
+
+      // Lead-in changes: arc <-> line or plane change on a vertical-plane move
+      const isLead = list.map(op => {
+        if (!FLAGGED_TYPES.has(op.type)) return false;
+        const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
+        const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
+        if (!(pl && pr)) return isVerticalArc(pl || pr);
+        const shapeChange = (op.tokenDiffs || []).some(t => t.severity !== 'equal' && (t.field === 'motion' ||
+          (t.field === 'gCode' && [t.leftVal, t.rightVal].some(v => /^G0?1[789]$/i.test(String(v || ''))))));
+        return shapeChange && (isVerticalArc(pl) || isVerticalArc(pr));
+      });
+      // Added / removed lines right next to a lead-in change are its new or old moves
+      const nearLead = k => { for (let j = Math.max(0, k - 3); j <= Math.min(list.length - 1, k + 3); j++) if (isLead[j]) return true; return false; };
+
+      // Explain each flagged line: feed only, uniform shift, lead-in, or other
+      list.forEach((op, k) => {
+        if (!FLAGGED_TYPES.has(op.type)) return;
+        const at = base + k;
+        const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
+        const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
+        const diffs = (op.tokenDiffs || []).filter(t => t.severity !== 'equal');
+        const oneSided = !(pl && pr);
+        if (isLead[k] || (oneSided && nearLead(k))) { leadCount++; if (leadFirst < 0) leadFirst = at; return; }
+        if (oneSided) {
+          const p = pl || pr;
+          if (Object.keys(p.axes).length + Object.keys(p.arcParams).length > 0) oneSidedMotion++;
+          sum.other++; if (sum.otherFirst < 0) sum.otherFirst = at; return;
+        }
+        const explained = diffs.every(t => {
+          if (t.field === 'feed' || /^redundant/.test(t.field)) return true;
+          const m = /^axis-([XYZ])$/.exec(t.field);
+          return m && typeof t.leftVal === 'number' && typeof t.rightVal === 'number' &&
+            shiftKey.has(m[1] + round4(t.rightVal - t.leftVal));
+        });
+        if (!explained) { sum.other++; if (sum.otherFirst < 0) sum.otherFirst = at; }
+      });
+
+      sum.feeds = [...feedMap.values()].map(g => ({
+        ...g, pct: (typeof g.from === 'number' && typeof g.to === 'number' && g.from !== 0)
+          ? (g.to - g.from) / g.from * 100 : null
+      })).sort((x, y) => Math.abs(y.pct ?? 1e9) - Math.abs(x.pct ?? 1e9));
+      if (leadCount) sum.leadIn = { count: leadCount, first: leadFirst };
+      sum.recalculated = motionLines >= 20 && oneSidedMotion >= Math.max(20, motionLines * 0.1);
+
+      if (!match.left) sum.tags.push('only in right');
+      else if (!match.right) sum.tags.push('only in left');
+      else if (sum.flagged === 0) sum.tags.push('no change');
+      else {
+        if (sum.feeds.length) sum.tags.push('feeds');
+        const major = sum.shifts.filter(sh => sh.most);
+        if (major.length) sum.tags.push('shifted ' + [...new Set(major.map(sh => sh.axis))].join(''));
+        if (sum.leadIn) sum.tags.push('lead-in');
+        if (sum.recalculated) sum.tags.push('recalculated');
+        if (sum.other) sum.tags.push(sum.other + ' other');
+      }
+      summaries.push(sum);
+    }
+    return summaries;
+  }
+
+  // =====================================================
+  // Side-by-side row alignment
+  // =====================================================
+
+  /**
+   * Work out the blank padding rows each pane needs so matched lines sit on
+   * the same screen row. Rows are measured, not counted from ops, so blank
+   * lines and toolpath header bars are included.
+   *
+   * Sync points are [leftLine, rightLine] pairs that should share a row.
+   * Header points (toolpath header bars) win first; then every op with both
+   * sides is used if it fits between them. A point that goes backwards on
+   * either side, or crosses a header, is skipped.
+   *
+   * A line pair may share its line with a header just lined up (e.g. the
+   * old post's first label line vs the new post's line after its divider);
+   * then the gap goes just below that header bar.
+   *
+   * Returns { left, right, leftBelowSep, rightBelowSep } as {line: rows}.
+   * left/right padding is drawn above the line's header bar (key lineCount =
+   * trailing padding); *BelowSep padding is drawn just below it.
+   */
+  function alignRows(ops, leftCount, rightCount, leftSeps, rightSeps, headerPoints) {
+    const byLeft = (a, b) => a[0] - b[0] || a[1] - b[1];
+    const inRange = p => p[0] >= 0 && p[1] >= 0 && p[0] < leftCount && p[1] < rightCount;
+
+    // Headers: keep the ones that run forward on both sides
+    const headers = [];
+    for (const h of (headerPoints || []).filter(inRange).sort(byLeft)) {
+      const last = headers[headers.length - 1];
+      if (!last || (h[0] > last[0] && h[1] > last[1])) headers.push(h);
+    }
+
+    const pairs = [];
+    for (const op of ops) {
+      if (op.leftIdx !== undefined && op.rightIdx !== undefined) pairs.push([op.leftIdx, op.rightIdx]);
+    }
+    pairs.sort(byLeft);
+
+    // Merge: line pairs must sit strictly between the headers around them
+    const points = [];
+    let last = [-1, -1];
+    let lastIsHeader = false;
+    let hi = 0;
+    for (const p of pairs) {
+      if (!inRange(p)) continue;
+      while (hi < headers.length && headers[hi][0] <= p[0]) {
+        points.push(headers[hi]);
+        last = headers[hi++];
+        lastIsHeader = true;
+      }
+      const next = headers[hi];
+      const forward = (p[0] > last[0] && p[1] > last[1]) ||
+        (lastIsHeader && ((p[0] === last[0] && p[1] > last[1]) || (p[1] === last[1] && p[0] > last[0])));
+      if (forward && (!next || (p[0] < next[0] && p[1] < next[1]))) {
+        points.push(p);
+        last = p;
+        lastIsHeader = false;
+      }
+    }
+    while (hi < headers.length) points.push(headers[hi++]);
+
+    const side = (count, seps) => ({ count, seps: seps || {}, pad: {}, below: {}, cur: 0, row: 0, headerAt: -1 });
+    const L = side(leftCount, leftSeps);
+    const R = side(rightCount, rightSeps);
+
+    // Rows used by lines before `upto` (each line: padding + header bar + itself)
+    const advance = (s, upto) => {
+      while (s.cur < upto) {
+        s.row += (s.pad[s.cur] || 0) + (s.seps[s.cur] ? 1 : 0) + (s.below[s.cur] || 0) + 1;
+        s.cur++;
+      }
+    };
+    // Rows above line i's text (cursor must already be at i)
+    const rowOf = (s, i) => s.row + (s.pad[i] || 0) + (s.seps[i] ? 1 : 0) + (s.below[i] || 0);
+    // Add rows above line i, or below its header bar if that bar is already lined up
+    const addPad = (s, i, n) => {
+      const map = s.headerAt === i ? s.below : s.pad;
+      map[i] = (map[i] || 0) + n;
+    };
+
+    const headerSet = new Set(headers);
+    for (const pt of points) {
+      const [li, ri] = pt;
+      advance(L, li);
+      advance(R, ri);
+      const diff = rowOf(L, li) - rowOf(R, ri);
+      if (diff < 0) addPad(L, li, -diff);
+      else if (diff > 0) addPad(R, ri, diff);
+      if (headerSet.has(pt)) { L.headerAt = li; R.headerAt = ri; }
+    }
+
+    // Trailing padding so both panes end on the same row
+    advance(L, leftCount);
+    advance(R, rightCount);
+    if (L.row < R.row) L.pad[leftCount] = R.row - L.row;
+    else if (R.row < L.row) R.pad[rightCount] = L.row - R.row;
+
+    return { left: L.pad, right: R.pad, leftBelowSep: L.below, rightBelowSep: R.below };
+  }
+
+  // =====================================================
   // Exports
   // =====================================================
 
@@ -2169,6 +2449,8 @@ const DiffEngine = (() => {
     trackContext,
     commentRole,
     computeSemanticDiff,
+    alignRows,
+    summarizeChanges,
     countStats
   };
 })();
