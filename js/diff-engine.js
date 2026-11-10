@@ -348,6 +348,7 @@ const DiffEngine = (() => {
   //   note   — any other comment, incl. comments on code lines -> critical
   //   label  — divider and toolpath label comments             -> ignored
   //   header — comment block at the top of the file (name, date, machine) -> ignored
+  //   (label / header lines on one side only become op type 'ignored')
   //   fixture — (FIXTURE = ...) line: critical only when BOTH files have one and they differ
   // Labels and header are covered elsewhere (toolpath name, T words, tool lines).
 
@@ -2016,6 +2017,7 @@ const DiffEngine = (() => {
     }
 
     for (const match of tpMatches) {
+      match.opStart = allOps.length;
       if (match.left && match.right) {
         allOps.push(...diffPair(match));
       } else if (match.left) {
@@ -2031,6 +2033,7 @@ const DiffEngine = (() => {
           allOps.push(oneSidedOp('added', i, rightLines, rightParsed, rules));
         }
       }
+      match.opEnd = allOps.length;
     }
 
     // Grade coordinate diffs by tolerance
@@ -2085,6 +2088,15 @@ const DiffEngine = (() => {
     const op = type === 'added'
       ? { type, rightIdx: idx, rightLine: lines[idx] }
       : { type, leftIdx: idx, leftLine: lines[idx] };
+    // File header and toolpath label comments are found by where they sit
+    // (above the first code line), not by their text. On one side only they
+    // are post layout, not a change: keep the line but don't flag it.
+    const role = parsed[idx].isCommentOnly ? commentRole(parsed[idx], rules) : null;
+    if (role === 'label' || role === 'header') {
+      op.oneSided = type;
+      op.type = 'ignored';
+      return op;
+    }
     if (hasCriticalContent(parsed[idx], rules)) op.alwaysShow = true;
     const p = parsed[idx];
     const moves = Object.keys(p.axes).length + Object.keys(p.rotary).length + Object.keys(p.arcParams).length > 0;
@@ -2178,6 +2190,146 @@ const DiffEngine = (() => {
       else if (op.type === 'removed') removed++;
     }
     return { critical, minor, added, removed };
+  }
+
+  // =====================================================
+  // Change summary (per matched toolpath)
+  // =====================================================
+
+  const FLAGGED_TYPES = new Set(['critical', 'minor', 'workoffset', 'added', 'removed']);
+  const round4 = v => Math.round(v * 10000) / 10000;
+
+  /** Vertical-plane move: G18/G19 on the line, or a K arc word (XZ / YZ arc). */
+  function isVerticalArc(p) {
+    if (!p) return false;
+    if (p.gCodes.some(g => { const n = codeNum(g); return n === 18 || n === 19; })) return true;
+    return p.arcParams.K !== undefined;
+  }
+
+  /**
+   * Group a diff result into one summary per toolpath pair, so repeated
+   * changes read as one decision:
+   *   feeds   — every F change, grouped by from -> to, with % change
+   *   shifts  — one axis moved by the same amount on many lines
+   *   leadIn  — arc swapped for a line (or plane change) on a vertical-plane move
+   *   recalculated — a large share of the motion lines exist on one side only
+   *   other   — flagged lines none of the above explain
+   * opts.minShift: smallest uniform shift worth calling out (inch/mm).
+   */
+  function summarizeChanges(result, opts = {}) {
+    const minShift = opts.minShift || 0.001;
+    const { ops, tpMatches, leftParsed, rightParsed } = result;
+    const summaries = [];
+
+    for (const match of tpMatches) {
+      const list = ops.slice(match.opStart || 0, match.opEnd || 0);
+      const sum = {
+        left: match.left || null, right: match.right || null,
+        flagged: 0, feeds: [], shifts: [], leadIn: null, recalculated: false, other: 0,
+        otherFirst: -1, tags: []
+      };
+      const base = match.opStart || 0;
+      const feedMap = new Map();
+      const axisDeltas = { X: new Map(), Y: new Map(), Z: new Map() };
+      const axisTotal = { X: 0, Y: 0, Z: 0 };
+      let motionLines = 0, oneSidedMotion = 0, leadCount = 0, leadFirst = -1;
+
+      list.forEach((op, k) => {
+        const at = base + k;
+        const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
+        const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
+        const moves = p => p && (Object.keys(p.axes).length + Object.keys(p.arcParams).length) > 0;
+        if (moves(pl) || moves(pr)) motionLines++;
+        if (pl && pr) {
+          for (const a of ['X', 'Y', 'Z']) {
+            const lv = pl.axes[a], rv = pr.axes[a];
+            if (typeof lv !== 'number' || typeof rv !== 'number') continue;
+            axisTotal[a]++;
+            const dv = round4(rv - lv);
+            const g = axisDeltas[a].get(dv) || { count: 0, first: at };
+            g.count++;
+            axisDeltas[a].set(dv, g);
+          }
+        }
+        if (!FLAGGED_TYPES.has(op.type)) return;
+        sum.flagged++;
+        for (const t of op.tokenDiffs || []) {
+          if (t.field !== 'feed' || t.severity === 'equal') continue;
+          const key = t.leftVal + '>' + t.rightVal;
+          const g = feedMap.get(key) || { from: t.leftVal, to: t.rightVal, count: 0, first: at };
+          g.count++;
+          feedMap.set(key, g);
+        }
+      });
+
+      // Uniform shifts: a delta shared by many lines on one axis
+      for (const a of ['X', 'Y', 'Z']) {
+        for (const [delta, g] of axisDeltas[a]) {
+          if (Math.abs(delta) < minShift - 1e-9 || g.count < 3) continue;
+          sum.shifts.push({ axis: a, delta, count: g.count, total: axisTotal[a], first: g.first,
+            most: g.count >= axisTotal[a] / 2 });
+        }
+      }
+      sum.shifts.sort((x, y) => y.count - x.count);
+      const shiftKey = new Set(sum.shifts.map(sh => sh.axis + sh.delta));
+
+      // Lead-in changes: arc <-> line or plane change on a vertical-plane move
+      const isLead = list.map(op => {
+        if (!FLAGGED_TYPES.has(op.type)) return false;
+        const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
+        const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
+        if (!(pl && pr)) return isVerticalArc(pl || pr);
+        const shapeChange = (op.tokenDiffs || []).some(t => t.severity !== 'equal' && (t.field === 'motion' ||
+          (t.field === 'gCode' && [t.leftVal, t.rightVal].some(v => /^G0?1[789]$/i.test(String(v || ''))))));
+        return shapeChange && (isVerticalArc(pl) || isVerticalArc(pr));
+      });
+      // Added / removed lines right next to a lead-in change are its new or old moves
+      const nearLead = k => { for (let j = Math.max(0, k - 3); j <= Math.min(list.length - 1, k + 3); j++) if (isLead[j]) return true; return false; };
+
+      // Explain each flagged line: feed only, uniform shift, lead-in, or other
+      list.forEach((op, k) => {
+        if (!FLAGGED_TYPES.has(op.type)) return;
+        const at = base + k;
+        const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
+        const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
+        const diffs = (op.tokenDiffs || []).filter(t => t.severity !== 'equal');
+        const oneSided = !(pl && pr);
+        if (isLead[k] || (oneSided && nearLead(k))) { leadCount++; if (leadFirst < 0) leadFirst = at; return; }
+        if (oneSided) {
+          const p = pl || pr;
+          if (Object.keys(p.axes).length + Object.keys(p.arcParams).length > 0) oneSidedMotion++;
+          sum.other++; if (sum.otherFirst < 0) sum.otherFirst = at; return;
+        }
+        const explained = diffs.every(t => {
+          if (t.field === 'feed' || /^redundant/.test(t.field)) return true;
+          const m = /^axis-([XYZ])$/.exec(t.field);
+          return m && typeof t.leftVal === 'number' && typeof t.rightVal === 'number' &&
+            shiftKey.has(m[1] + round4(t.rightVal - t.leftVal));
+        });
+        if (!explained) { sum.other++; if (sum.otherFirst < 0) sum.otherFirst = at; }
+      });
+
+      sum.feeds = [...feedMap.values()].map(g => ({
+        ...g, pct: (typeof g.from === 'number' && typeof g.to === 'number' && g.from !== 0)
+          ? (g.to - g.from) / g.from * 100 : null
+      })).sort((x, y) => Math.abs(y.pct ?? 1e9) - Math.abs(x.pct ?? 1e9));
+      if (leadCount) sum.leadIn = { count: leadCount, first: leadFirst };
+      sum.recalculated = motionLines >= 20 && oneSidedMotion >= Math.max(20, motionLines * 0.1);
+
+      if (!match.left) sum.tags.push('only in right');
+      else if (!match.right) sum.tags.push('only in left');
+      else if (sum.flagged === 0) sum.tags.push('no change');
+      else {
+        if (sum.feeds.length) sum.tags.push('feeds');
+        const major = sum.shifts.filter(sh => sh.most);
+        if (major.length) sum.tags.push('shifted ' + [...new Set(major.map(sh => sh.axis))].join(''));
+        if (sum.leadIn) sum.tags.push('lead-in');
+        if (sum.recalculated) sum.tags.push('recalculated');
+        if (sum.other) sum.tags.push(sum.other + ' other');
+      }
+      summaries.push(sum);
+    }
+    return summaries;
   }
 
   // =====================================================
@@ -2298,6 +2450,7 @@ const DiffEngine = (() => {
     commentRole,
     computeSemanticDiff,
     alignRows,
+    summarizeChanges,
     countStats
   };
 })();

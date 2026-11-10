@@ -650,5 +650,41 @@ test('tool list lines pair by tool number', () => {
   eq(pairs.join(','), '1-2,2-3');
 });
 
+test('label comments on one side only are ignored', () => {
+  const d = diff(OLD_POST, NEW_POST);
+  const flagged = d.ops.filter(o => o.type === 'added' && /^\(/.test(o.rightLine)).map(o => o.rightLine);
+  eq(flagged.join(','), '');
+  eq(d.ops.filter(o => o.type === 'ignored').length > 0, true);
+});
+test('note added inside code still shows', () => {
+  const d = diff(OLD_POST, NEW_POST.map(l => l === 'G01 Y-4. F20.' ? '(CHANGE FEED HERE)\nG01 Y-4. F20.' : l).join('\n').split('\n'));
+  eq(d.ops.some(o => o.type === 'added' && o.rightLine === '(CHANGE FEED HERE)'), true);
+});
+
+console.log('\nChange summary');
+const sumOf = (L, R, minShift = 0.001) => DE.summarizeChanges(diff(L, R), { minShift });
+const tpSum = (L, R) => sumOf(L, R).find(s => s.left && s.left.type === 'toolpath');
+const swap = (from, to) => OLD_POST.map(l => l === from ? to : l);
+test('unchanged toolpath says no change', () => eq(tpSum(OLD_POST, NEW_POST).tags.join(','), 'no change'));
+test('feed change grouped with % change', () => {
+  const s = tpSum(OLD_POST, swap('G01 Y-4. F20.', 'G01 Y-4. F40.'));
+  eq(s.tags.join(',') + ' ' + s.feeds[0].from + '>' + s.feeds[0].to + ' ' + Math.round(s.feeds[0].pct), 'feeds 20>40 100');
+});
+test('uniform Z shift is called out once', () => {
+  const R = OLD_POST.map(l => l.replace(/Z(\d+\.?\d*)/, (m, v) => 'Z' + (+v - 0.002).toFixed(4)));
+  const s = tpSum(OLD_POST, R);
+  eq(s.tags.includes('shifted Z') && s.shifts[0].delta === -0.002, true);
+  eq(s.other, 0);
+});
+test('shift below the limit is not a shift', () => {
+  const R = OLD_POST.map(l => l.replace(/Z(\d+\.?\d*)/, (m, v) => 'Z' + (+v - 0.0005).toFixed(4)));
+  eq(tpSum(OLD_POST, R).shifts.length, 0);
+});
+test('vertical arc lead-in swapped for a line is tagged lead-in', () => {
+  const L = swap('G00 Z1.', 'G00 Z1.\nG19 G03 Y1. Z0.5 K0.01 F20.').join('\n').split('\n');
+  const R = swap('G00 Z1.', 'G00 Z1.\nG01 Y1. Z0.49 F20.').join('\n').split('\n');
+  eq(tpSum(L, R).tags.includes('lead-in'), true);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

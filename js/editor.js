@@ -334,9 +334,14 @@ const Editor = (() => {
       const placeholderSuffix = isPlaceholder
         ? ` <span class="tp-not-in-file">(${parts.note ? 'moved' : 'not in file'})</span>` : '';
       const note = parts.note ? ` <span class="tp-moved">${escapeHtml(parts.note)}</span>` : '';
+      // Status tags from the change summary (no change / feeds / shifted Z / lead-in / ...)
+      const status = (parts.status || []).map(t => {
+        const cls = t === 'no change' ? ' tp-status-ok' : /recalculated|only in/.test(t) ? ' tp-status-big' : '';
+        return `<span class="tp-status${cls}">${escapeHtml(t)}</span>`;
+      }).join('');
       return `<span class="tp-n-num">${escapeHtml(parts.nNumber)}</span>` +
         `<span class="tp-tool">${escapeHtml(parts.tool)}</span>` +
-        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}${note}</span>`;
+        `<span class="tp-desc">${escapeHtml(parts.desc)}${placeholderSuffix}${note}</span>${status}`;
     }
     return `<span class="tp-sep-label">${escapeHtml(sep.label)}</span>`;
   }

@@ -44,6 +44,8 @@ const App = (() => {
   let currentDiffIndex = -1;
   let currentToolpaths = { left: [], right: [] };
   let currentTpMatches = []; // toolpath match pairs from diff engine
+  let summaryByTp = new Map(); // toolpath -> DiffEngine.summarizeChanges entry
+  let lastSummaries = [];
   let lastDiffResult = null; // full engine result (parsed lines, toolpaths) for Feeds & Speeds
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
@@ -332,15 +334,17 @@ N120 M30`;
 
   // === Toolpath helpers ===
   function buildTpLabelParts(tp) {
-    if (tp.type === 'preamble') return { nNumber: '', tool: '', desc: 'Program Header' };
-    if (tp.type === 'program_end') return { nNumber: '', tool: '', desc: 'Program End' };
+    const tags = (summaryByTp.get(tp) || {}).tags || [];
+    if (tp.type === 'preamble') return { nNumber: '', tool: '', desc: 'Program Header', status: tags };
+    if (tp.type === 'program_end') return { nNumber: '', tool: '', desc: 'Program End', status: tags };
     const nNumber = tp.nNumber || '';
     const tool = tp.toolNumber !== null ? 'T' + tp.toolNumber : '';
     const descParts = [];
     if (tp.name) descParts.push(tp.name);
     if (tp.opType) descParts.push(tp.opType);
     const desc = descParts.join(' | ') || 'Section ' + tp.id;
-    return { nNumber, tool, desc, note: movedNote(tp) };
+    const sum = summaryByTp.get(tp);
+    return { nNumber, tool, desc, note: movedNote(tp), status: sum ? sum.tags : [] };
   }
 
   /** "moved: op 2 → op 1 · same code" for a toolpath whose order changed. */
@@ -489,6 +493,13 @@ N120 M30`;
     const prevToolpaths = currentToolpaths;
     currentToolpaths = { left: diffResult.leftToolpaths, right: diffResult.rightToolpaths };
     currentTpMatches = diffResult.tpMatches || [];
+    // Grouped change summary; a uniform shift must be at least the minor threshold
+    lastSummaries = DiffEngine.summarizeChanges(diffResult, { minShift: settings.minorThreshold });
+    summaryByTp = new Map();
+    for (const s of lastSummaries) {
+      if (s.left) summaryByTp.set(s.left, s);
+      if (s.right) summaryByTp.set(s.right, s);
+    }
 
     // Carry hide/TOL choices over to the new toolpath list (matched by name)
     const prevDisabled = idsToKeys(disabledToolpathIds, prevToolpaths);
@@ -699,6 +710,14 @@ N120 M30`;
         leftDecos.push({ line: op.leftIdx, type: op.workOffset ? 'workoffset' : 'removed' });
         diffPositions.push(i);
         if (op.workOffset) stats.workoffset++; else stats.removed++;
+        continue;
+      }
+
+      // Header / label comment on one side only: faint mark, not counted or navigated
+      if (etype === 'ignored') {
+        if (disabled) continue;
+        if (op.leftIdx !== undefined) leftDecos.push({ line: op.leftIdx, type: 'ignored' });
+        else rightDecos.push({ line: op.rightIdx, type: 'ignored' });
         continue;
       }
 
@@ -1058,5 +1077,8 @@ N120 M30`;
     return lastDiffResult;
   }
 
-  return { runDiff, loadExample, getDiffContext, setAssumption, jumpTo };
+  /** Grouped change summary from the last compare (used by the Changes popup). */
+  function getSummaries() { return lastSummaries; }
+
+  return { runDiff, loadExample, getDiffContext, getSummaries, setAssumption, jumpTo };
 })();

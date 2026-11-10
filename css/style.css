@@ -557,6 +557,8 @@ html, body {
 .diff-bg-removed .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
 
 .diff-bg-tolerance { background-color: rgba(100, 100, 50, 0.1); }
+/* Header / label comment on one side only: shown faintly, not counted */
+.diff-bg-ignored .line-content { border-left: 2px dotted #555; padding-left: 6px; opacity: 0.6; }
 .diff-bg-tolerance .line-content { border-left: 2px dotted #666; padding-left: 6px; }
 
 /* Disabled toolpath lines — dimmed with strikethrough line numbers */
@@ -1122,3 +1124,25 @@ input[type="checkbox"]:focus-visible {
 .tt-fixture { margin: 10px 0 4px; font-size: 13px; }
 .tt-fixture b { color: var(--text-dim); font-weight: 500; margin-right: 8px; }
 .tt-fixture-changed { padding: 4px 8px; background: var(--diff-major); border-left: 3px solid #c62828; }
+
+/* === Change summary: header bar tags + Changes popup === */
+.tp-status {
+  margin-left: 6px; font-size: 10px; padding: 0 5px; border-radius: 3px; white-space: nowrap;
+  border: 1px solid #7a5410; color: #ffaa33;
+}
+.tp-status-ok { border-color: #3a4a3a; color: #6a8a6a; }
+.tp-status-big { border-color: #8b2b2b; color: #ff8a80; }
+.changes-dialog { width: min(1100px, calc(100vw - 32px)); }
+.changes-body { overflow: auto; padding: 0 16px 16px; }
+.ch-head { font-size: 13px; margin: 14px 0 6px; color: var(--text); }
+.ch-table td { white-space: normal; }
+.ch-jump { color: var(--text); text-decoration: none; }
+.ch-jump:hover { text-decoration: underline; color: #4fc1ff; }
+.ch-items { line-height: 1.7; }
+.ch-n { color: #c586c0; }
+.ch-pct { color: var(--text-dim); font-size: 11px; }
+.ch-pct-big { color: #ff8a80; font-weight: 700; }
+.ch-tag { font-size: 10px; padding: 0 5px; border-radius: 3px; border: 1px solid #7a5410; color: #ffaa33; white-space: nowrap; }
+.ch-tag-ok { border-color: #3a4a3a; color: #6a8a6a; }
+.ch-tag-big { border-color: #8b2b2b; color: #ff8a80; }
+.ch-warn { color: #ff8a80; }

@@ -27,6 +27,7 @@ gcode-compare/
 │   ├── editor.js       — single-layer line-div editor, rendering, decorations, hover hook
 │   ├── app.js          — UI wiring, settings, state, diff coordination
 │   ├── feeds.js        — Feeds & Speeds: per-toolpath feed/RPM analysis + popup
+│   ├── changes.js      — Changes popup: grouped summary (feeds, shifts, lead-ins) per toolpath
 │   ├── tools.js        — Tool Table: tool list / gauge / usage / fixture compare + popup
 │   ├── info.js         — in-app Info popup: what is / isn't checked
 │   └── hover-help.js   — bottom info panel: meaning/values of G/M/words/#vars + Zappettini wiki links
@@ -214,6 +215,25 @@ gap are paired only if they are the same kind (share at least half their word
 letters, or both comment-only). Others stay as plain removed / added.
 A tool list line `(T02 - ...)` pairs only with the same tool number, and a
 `(-----)` divider only with a divider, so an extra line can't shift the list.
+
+**One-sided label / header comments** (`oneSidedOp`): a comment-only line on one
+side whose role is label or header (found by position: file top, or between a
+toolpath header and its first code line) becomes op type 'ignored'. Shown faintly
+(diff-bg-ignored), not counted, not navigated. Tool, fixture, note and
+commented-out-code lines are still flagged.
+
+**Change summary** (`summarizeChanges(result, { minShift })`): one entry per
+tpMatch, using match.opStart / opEnd (set in computeSemanticDiff).
+- feeds: every F change grouped by from -> to, with pct; sorted by biggest |pct|
+- shifts: same delta (4 places) on one axis X/Y/Z across paired lines, |delta| >=
+  minShift (app passes the minor threshold, 0.001) and >= 3 lines. 'shifted Z' tag
+  only when it covers at least half of that axis's paired lines
+- leadIn: arc <-> line or plane change on a vertical-plane move (G18/G19 or K arc);
+  added/removed lines within 3 ops of one count as lead-in too
+- recalculated: >= 20 motion lines and one-sided motion lines >= max(20, 10%)
+- other: flagged lines none of the above explain
+- tags: no change / feeds / shifted XYZ / lead-in / recalculated / N other /
+  only in left|right. Shown on header bars (labelParts.status) and in Changes popup.
 
 **Stats** (`countStats`): counts critical (incl. workoffset), minor, added, removed.
 Not used by the UI — app.js counts only what is actually displayed.
