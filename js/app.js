@@ -49,6 +49,10 @@ const App = (() => {
   let lastDiffResult = null; // full engine result (parsed lines, toolpaths) for Feeds & Speeds
   let disabledToolpathIds = new Set(); // toolpath IDs (from left side) that are disabled
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
+  // Diff categories switched off from the legend: no gutter mark, skipped by F7, line shown plain.
+  // Critical is never in here (always shown).
+  const HIDEABLE_CATS = ['workoffset', 'minor', 'added', 'removed'];
+  let hiddenCats = new Set();
   // "Test this IF as true / false" choices: line -> { raw, value } per side
   let assumptions = { left: new Map(), right: new Map() };
 
@@ -86,6 +90,7 @@ N120 M30`;
   function init() {
     loadSettings();
     applySettingsToUI();
+    initLegendToggles();
 
     Editor.init(
       document.getElementById('left-editor'),
@@ -700,16 +705,20 @@ N120 M30`;
       // One-sided ops: optionally skip decoration
       if (etype === 'added') {
         if (disabled && !op.alwaysShow) continue;
-        rightDecos.push({ line: op.rightIdx, type: op.workOffset ? 'workoffset' : 'added' });
-        diffPositions.push(i);
+        const cat = op.workOffset ? 'workoffset' : 'added';
         if (op.workOffset) stats.workoffset++; else stats.added++;
+        if (hiddenCats.has(cat)) { rightDecos.push({ line: op.rightIdx, type: 'tolerance' }); continue; }
+        rightDecos.push({ line: op.rightIdx, type: cat });
+        diffPositions.push(i);
         continue;
       }
       if (etype === 'removed') {
         if (disabled && !op.alwaysShow) continue;
-        leftDecos.push({ line: op.leftIdx, type: op.workOffset ? 'workoffset' : 'removed' });
-        diffPositions.push(i);
+        const cat = op.workOffset ? 'workoffset' : 'removed';
         if (op.workOffset) stats.workoffset++; else stats.removed++;
+        if (hiddenCats.has(cat)) { leftDecos.push({ line: op.leftIdx, type: 'tolerance' }); continue; }
+        leftDecos.push({ line: op.leftIdx, type: cat });
+        diffPositions.push(i);
         continue;
       }
 
@@ -728,11 +737,15 @@ N120 M30`;
       if (etype === 'equal' || hasBothSides) {
         if (etype !== 'equal') {
           const dt = decoType(etype);
-          leftDecos.push({ line: op.leftIdx, type: dt, tokenDiffs: op.tokenDiffs });
-          rightDecos.push({ line: op.rightIdx, type: dt, tokenDiffs: op.tokenDiffs });
-          // Tolerance diffs get decoration but NOT navigation/stats
+          // A category switched off in the legend looks like a within-tolerance line
+          const hidden = hiddenCats.has(dt);
+          const shownType = hidden ? 'tolerance' : dt;
+          leftDecos.push({ line: op.leftIdx, type: shownType, tokenDiffs: op.tokenDiffs });
+          rightDecos.push({ line: op.rightIdx, type: shownType, tokenDiffs: op.tokenDiffs });
+          // Tolerance diffs get decoration but NOT navigation/stats.
+          // Hidden categories still count, but get no gutter mark or F7 stop.
           if (etype !== 'tolerance') {
-            diffPositions.push(i);
+            if (!hidden) diffPositions.push(i);
             if (dt === 'workoffset') stats.workoffset++;
             else if (dt === 'minor') stats.minor++;
             else stats.critical++;
@@ -832,6 +845,36 @@ N120 M30`;
   function opRow(op) {
     return op.leftIdx !== undefined ? Editor.getDisplayRow('left', op.leftIdx)
                                     : Editor.getDisplayRow('right', op.rightIdx);
+  }
+
+  // === Legend: click a category to hide / show it ===
+  function initLegendToggles() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('gcode-compare-hidden-cats') || '[]');
+      hiddenCats = new Set(saved.filter(c => HIDEABLE_CATS.includes(c)));
+    } catch (e) { hiddenCats = new Set(); }
+    document.querySelectorAll('#color-legend .legend-item[data-cat]').forEach(el => {
+      const cat = el.dataset.cat;
+      el.classList.add('legend-toggle');
+      el.setAttribute('role', 'button');
+      el.tabIndex = 0;
+      const sync = () => {
+        const off = hiddenCats.has(cat);
+        el.classList.toggle('legend-off', off);
+        el.setAttribute('aria-pressed', String(!off));
+        el.title = off ? 'Hidden: no gutter mark, skipped by F7. Click to show.'
+                       : 'Click to hide: no gutter mark, skipped by F7.';
+      };
+      const flip = () => {
+        if (hiddenCats.has(cat)) hiddenCats.delete(cat); else hiddenCats.add(cat);
+        try { localStorage.setItem('gcode-compare-hidden-cats', JSON.stringify([...hiddenCats])); } catch (e) {}
+        sync();
+        applyDecorations();
+      };
+      el.addEventListener('click', flip);
+      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
+      sync();
+    });
   }
 
   function updateDiffMarkers() {

@@ -336,6 +336,10 @@ html, body {
   gap: 4px;
 }
 
+.legend-toggle { cursor: pointer; user-select: none; }
+.legend-toggle:hover { color: var(--text); }
+.legend-off { opacity: 0.4; text-decoration: line-through; }
+
 .legend-swatch {
   display: inline-block;
   width: 12px;
