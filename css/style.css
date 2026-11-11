@@ -336,6 +336,10 @@ html, body {
   gap: 4px;
 }
 
+.legend-toggle { cursor: pointer; user-select: none; }
+.legend-toggle:hover { color: var(--text); }
+.legend-off { opacity: 0.4; text-decoration: line-through; }
+
 .legend-swatch {
   display: inline-block;
   width: 12px;
@@ -346,7 +350,7 @@ html, body {
 .legend-workoffset { background: var(--diff-workoffset); border: 1px solid #c040ff; }
 .legend-critical { background: var(--diff-major); border: 1px solid #c62828; }
 .legend-minor { background: var(--diff-minor); border: 1px solid #c89a10; }
-.legend-tolerance { background: rgba(100, 100, 50, 0.3); border: 1px dotted #666; }
+.legend-tolerance { background: rgba(255, 255, 255, 0.07); border: 1px solid #444; }
 
 .legend-added { background: var(--diff-added); border: 1px solid #3fb950; }
 .legend-removed { background: var(--diff-removed); border: 1px solid #c62828; }
@@ -556,10 +560,9 @@ html, body {
 .diff-bg-removed { background-color: var(--diff-removed); }
 .diff-bg-removed .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
 
-.diff-bg-tolerance { background-color: rgba(100, 100, 50, 0.1); }
+/* Within tolerance (TOL on): line looks normal, only the changed word gets a slight tint */
 /* Header / label comment on one side only: shown faintly, not counted */
 .diff-bg-ignored .line-content { border-left: 2px dotted #555; padding-left: 6px; opacity: 0.6; }
-.diff-bg-tolerance .line-content { border-left: 2px dotted #666; padding-left: 6px; }
 
 /* Disabled toolpath lines — dimmed with strikethrough line numbers */
 .line-disabled {
@@ -886,6 +889,7 @@ html, body {
   border-radius: 0;
   padding: 0 1px;
 }
+.token-diff-tol { background: rgba(255, 255, 255, 0.07); }
 
 /* ===== Hidden file inputs ===== */
 #file-input-left, #file-input-right { display: none; }
@@ -1051,7 +1055,7 @@ input[type="checkbox"]:focus-visible {
 .chip-workoffset { background: var(--diff-workoffset); border-color: #c040ff; }
 .chip-critical { background: var(--diff-major); border-color: #c62828; }
 .chip-minor { background: var(--diff-minor); border-color: #c89a10; }
-.chip-tolerance { background: rgba(100, 100, 50, 0.25); border-color: #666; border-left-style: dotted; }
+.chip-tolerance { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
 .chip-added { background: var(--diff-added); border-color: #3fb950; }
 .chip-removed { background: var(--diff-removed); border-color: #c62828; }
 .chip-disabled { opacity: 0.4; border-color: #555; }

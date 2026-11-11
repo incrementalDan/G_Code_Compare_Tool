@@ -245,7 +245,7 @@ const Info = (() => {
     <tr><td>${PURPLE}</td><td>Work offset changed. Highest priority.</td></tr>
     <tr><td>${RED}</td><td>Can change what the machine does. Check every one.</td></tr>
     <tr><td>${AMBER}</td><td>Small coordinate change, or format-only change.</td></tr>
-    <tr><td>${FAINT}</td><td>Coordinate change within tolerance. Not counted.</td></tr>
+    <tr><td>${FAINT}</td><td>Coordinate change within tolerance (TOL on). Line stays plain; only the changed word gets a faint tint. Not counted.</td></tr>
     <tr><td>${GREEN}</td><td>Line only in the right (new) file.</td></tr>
     <tr><td>${BURG}</td><td>Line only in the left (machine) file.</td></tr>
     <tr><td><span class="token-diff">X1.5</span></td><td>The exact word that changed.</td></tr>
@@ -333,6 +333,7 @@ const Info = (() => {
   <table class="info-table info-kv">
     <tr><td><kbd>F7</kbd> / <kbd>Shift</kbd>+<kbd>F7</kbd> or ▲ ▼</td><td>Next / previous diff (skips within-tolerance and hidden)</td></tr>
     <tr><td>Centre gutter</td><td>Marks show where diffs are. Click to jump.</td></tr>
+    <tr><td>Legend (top strip)</td><td>Click Work Offset, Minor, Added or Removed to hide that kind: no gutter mark, skipped by F7, line shown plain. Still counted in the status bar. Critical can't be hidden. Click again to show.</td></tr>
     <tr><td>Toolpath header bar</td><td>Shows the current toolpath. Click for the list; click a row to jump.</td></tr>
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
       Warns if line counts differ by more than 10% and if the toolpath order changed. Right side: control, units per file

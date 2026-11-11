@@ -471,7 +471,8 @@ const Editor = (() => {
     const disabledClass = isDisabled ? ' line-disabled' : '';
     const cursorClass = (i === state.cursorLine ? ' cursor-line' : '') + (i === state.flashLine ? ' jump-flash' : '');
     // A trailing \r (Windows line end) would break the row before the value note
-    const highlighted = syntaxHighlightLine(state.lines[i].replace(/\r$/, ''), tokenDiffs, state.side);
+    const highlighted = syntaxHighlightLine(state.lines[i].replace(/\r$/, ''), tokenDiffs, state.side,
+      type === 'tolerance' ? 'token-diff-tol' : 'token-diff');
     const note = state.annotations[i];
     const ghost = note ? `<span class="var-ghost">${escapeHtml(note)}</span>` : '';
     return `<div class="editor-line${bgClass}${disabledClass}${cursorClass}"><span class="line-num">${i + 1}</span><span class="line-content">${highlighted || (ghost ? '' : '&nbsp;')}${ghost}</span></div>`;
@@ -510,7 +511,7 @@ const Editor = (() => {
    * Color a line using the diff engine's own parser, so colors always match
    * what is compared (no coloring inside comments, decimals included).
    */
-  function syntaxHighlightLine(line, tokenDiffs, side) {
+  function syntaxHighlightLine(line, tokenDiffs, side, diffClass = 'token-diff') {
     if (!line) return '';
     const len = line.length;
     const cls = new Array(len).fill('');
@@ -530,7 +531,7 @@ const Editor = (() => {
       while (q < len && cls[q] === cls[p] && diff[q] === diff[p]) q++;
       let text = escapeHtml(line.substring(p, q));
       if (cls[p]) text = `<span class="${cls[p]}">${text}</span>`;
-      if (diff[p]) text = `<span class="token-diff">${text}</span>`;
+      if (diff[p]) text = `<span class="${diffClass}">${text}</span>`;
       out += text;
       p = q;
     }
