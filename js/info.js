@@ -245,7 +245,7 @@ const Info = (() => {
     <tr><td>${PURPLE}</td><td>Work offset changed. Highest priority.</td></tr>
     <tr><td>${RED}</td><td>Can change what the machine does. Check every one.</td></tr>
     <tr><td>${AMBER}</td><td>Small coordinate change, or format-only change.</td></tr>
-    <tr><td>${FAINT}</td><td>Coordinate change within tolerance. Not counted.</td></tr>
+    <tr><td>${FAINT}</td><td>Coordinate change within tolerance (TOL on). Line stays plain; only the changed word gets a faint tint. Not counted.</td></tr>
     <tr><td>${GREEN}</td><td>Line only in the right (new) file.</td></tr>
     <tr><td>${BURG}</td><td>Line only in the left (machine) file.</td></tr>
     <tr><td><span class="token-diff">X1.5</span></td><td>The exact word that changed.</td></tr>
