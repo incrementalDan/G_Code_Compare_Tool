@@ -99,32 +99,39 @@ N120 M30`;
     );
 
     // Wire inline toolpath separator callbacks
+    // A toolpath and its match on the other side share both checkboxes
+    const pairedIds = (tpId) => {
+      const isRight = tpId.startsWith('R');
+      const id = parseInt(isRight ? tpId.slice(1) : tpId, 10);
+      const m = currentTpMatches.find(x => (isRight ? x.right : x.left) && (isRight ? x.right : x.left).id === id);
+      const ids = [tpId];
+      if (m && m.left) ids.push(String(m.left.id));
+      if (m && m.right) ids.push('R' + m.right.id);
+      return [...new Set(ids)];
+    };
     const sepToggle = (tpId, checked) => {
-      if (checked) disabledToolpathIds.delete(tpId);
-      else disabledToolpathIds.add(tpId);
+      for (const id of pairedIds(tpId)) {
+        if (checked) disabledToolpathIds.delete(id);
+        else disabledToolpathIds.add(id);
+      }
       applyDecorations();
     };
     const sepClick = (tpId) => {
       // Find the toolpath and scroll to it (use anchorLine for visible position)
       const scrollLine = (tp) => (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
       const isRight = tpId.startsWith('R');
-      if (isRight) {
-        const rId = parseInt(tpId.slice(1), 10);
-        const rtp = currentToolpaths.right.find(t => t.id === rId);
-        if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
-        const ltp = currentToolpaths.left.find(t => t.id === rId);
-        if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
-      } else {
-        const lId = parseInt(tpId, 10);
-        const ltp = currentToolpaths.left.find(t => t.id === lId);
-        if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
-        const rtp = currentToolpaths.right.find(t => t.id === lId);
-        if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
-      }
+      const id = parseInt(isRight ? tpId.slice(1) : tpId, 10);
+      const m = currentTpMatches.find(x => { const t = isRight ? x.right : x.left; return t && t.id === id; });
+      const ltp = m ? m.left : (isRight ? null : currentToolpaths.left.find(t => t.id === id));
+      const rtp = m ? m.right : (isRight ? currentToolpaths.right.find(t => t.id === id) : null);
+      if (ltp) Editor.scrollToLine('left', scrollLine(ltp));
+      if (rtp) Editor.scrollToLine('right', scrollLine(rtp));
     };
     const tolToggle = (tpId, checked) => {
-      if (checked) toleranceOffIds.delete(tpId);
-      else toleranceOffIds.add(tpId);
+      for (const id of pairedIds(tpId)) {
+        if (checked) toleranceOffIds.delete(id);
+        else toleranceOffIds.add(id);
+      }
       applyDecorations();
     };
     const tolToggleAll = (checked) => {
@@ -756,11 +763,15 @@ N120 M30`;
 
     // Build toolpath separator data for inline display
     // Use anchorLine (comment/G100 line) not startLine (expanded preamble)
+    // Match index for each toolpath: lets the two dropdown lists line up
+    const pairOf = new Map();
+    currentTpMatches.forEach((m, k) => { if (m.left) pairOf.set(m.left, k); if (m.right) pairOf.set(m.right, k); });
     const leftSeparators = {};
     for (const tp of currentToolpaths.left) {
       const sepLine = (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
       leftSeparators[sepLine] = {
         id: String(tp.id),
+        pairKey: pairOf.get(tp),
         label: buildTpLabel(tp),
         labelParts: buildTpLabelParts(tp),
         disabled: disabledToolpathIds.has(String(tp.id)),
@@ -772,6 +783,7 @@ N120 M30`;
       const sepLine = (tp.anchorLine >= 0) ? tp.anchorLine : tp.startLine;
       rightSeparators[sepLine] = {
         id: 'R' + tp.id,
+        pairKey: pairOf.get(tp),
         label: buildTpLabel(tp),
         labelParts: buildTpLabelParts(tp),
         disabled: disabledToolpathIds.has('R' + tp.id),
