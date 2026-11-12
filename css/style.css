@@ -306,6 +306,19 @@ html, body {
   min-width: 26px;
 }
 .tp-dropdown-item.tp-sep-disabled { opacity: 0.45; }
+/* Gap row: toolpath missing on this side (hatched, like text-compare padding) */
+.tp-dropdown-item.tp-dropdown-gap { cursor: default; }
+.tp-dropdown-item.tp-dropdown-gap:hover { background: inherit !important; }
+#left-editor .tp-dropdown-gap {
+  background: repeating-linear-gradient(-45deg, rgba(13,40,24,0.6), rgba(13,40,24,0.6) 4px,
+    rgba(63,185,80,0.18) 4px, rgba(63,185,80,0.18) 8px) !important;
+  border-left: 3px solid rgba(63,185,80,0.5);
+}
+#right-editor .tp-dropdown-gap {
+  background: repeating-linear-gradient(-45deg, rgba(45,14,14,0.6), rgba(45,14,14,0.6) 4px,
+    rgba(198,40,40,0.18) 4px, rgba(198,40,40,0.18) 8px) !important;
+  border-left: 3px solid rgba(198,40,40,0.5);
+}
 .tp-dropdown-item.tp-sep-disabled .tp-desc {
   text-decoration: line-through;
   text-decoration-color: #555;

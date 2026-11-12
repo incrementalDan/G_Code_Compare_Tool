@@ -334,7 +334,7 @@ const Info = (() => {
     <tr><td><kbd>F7</kbd> / <kbd>Shift</kbd>+<kbd>F7</kbd> or ▲ ▼</td><td>Next / previous diff (skips within-tolerance and hidden)</td></tr>
     <tr><td>Centre gutter</td><td>Marks show where diffs are. Click to jump.</td></tr>
     <tr><td>Legend (top strip)</td><td>Click Work Offset, Minor, Added or Removed to hide that kind: no gutter mark, skipped by F7, line shown plain. Still counted in the status bar. Critical can't be hidden. Click again to show.</td></tr>
-    <tr><td>Toolpath header bar</td><td>Shows the current toolpath. Click for the list; click a row to jump.</td></tr>
+    <tr><td>Toolpath header bar</td><td>Shows the current toolpath. Click for the list; click a row to jump. Both lists line up and scroll together; a hatched blank row means that toolpath is not in that file. Ticking a box (show/hide or TOL) ticks its match on the other side too.</td></tr>
     <tr><td>Status bar</td><td>Toolpath counts, Work offset / Critical / Minor counts, line counts.
       Warns if line counts differ by more than 10% and if the toolpath order changed. Right side: control, units per file
       (G20 inch / G21 mm — red if they differ), <b>No-decimal check</b> (ON/OFF + lines without a decimal; click to step

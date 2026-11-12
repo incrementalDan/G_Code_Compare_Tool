@@ -172,6 +172,8 @@ const Editor = (() => {
       }
     });
 
+    tpDropdown.addEventListener('scroll', () => syncDropdownScroll(state));
+
     wrapper.addEventListener('scroll', () => {
       // Keep the (invisible) textarea over the visible area
       textarea.style.top = wrapper.scrollTop + 'px';
@@ -306,26 +308,71 @@ const Editor = (() => {
     if (arrow) arrow.innerHTML = open ? '&#9650;' : '&#9660;';
   }
 
-  function rebuildDropdown(state) {
-    if (!state.separatorPositions.length) {
-      state.tpDropdown.innerHTML = '';
-      return;
+  /**
+   * Line up the two toolpath lists like the text compare: a toolpath and its
+   * match share a row; a toolpath with no match on the other side gets a
+   * blank, hatched gap row over there. Pairs come from sep.pairKey.
+   */
+  function alignDropdownRows(left, right) {
+    const L = left.filter(s => !s.placeholder);
+    const R = right.filter(s => !s.placeholder);
+    const posOf = (list) => {
+      const m = new Map();
+      list.forEach((s, k) => { if (s.pairKey !== undefined && !m.has(s.pairKey)) m.set(s.pairKey, k); });
+      return m;
+    };
+    const lPos = posOf(L), rPos = posOf(R);
+    const rows = [];
+    let i = 0, j = 0;
+    while (i < L.length || j < R.length) {
+      const a = L[i], b = R[j];
+      if (!a) { rows.push([null, b]); j++; continue; }
+      if (!b) { rows.push([a, null]); i++; continue; }
+      if (a.pairKey !== undefined && a.pairKey === b.pairKey) { rows.push([a, b]); i++; j++; continue; }
+      const aLater = a.pairKey !== undefined && (rPos.get(a.pairKey) ?? -1) > j;
+      const bLater = b.pairKey !== undefined && (lPos.get(b.pairKey) ?? -1) > i;
+      if (aLater && !bLater) { rows.push([null, b]); j++; continue; }
+      if (bLater && !aLater) { rows.push([a, null]); i++; continue; }
+      if (a.offsetTop <= b.offsetTop) { rows.push([a, null]); i++; }
+      else { rows.push([null, b]); j++; }
     }
-    let html = '';
-    for (let i = 0; i < state.separatorPositions.length; i++) {
-      const sep = state.separatorPositions[i];
-      const checkedAttr = sep.disabled ? '' : ' checked';
-      const tolCheckedAttr = sep.toleranceEnabled ? ' checked' : '';
-      const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
-      const placeholderCls = sep.placeholder ? ' tp-placeholder' : '';
-      const rowCls = i % 2 === 0 ? 'tp-dropdown-even' : 'tp-dropdown-odd';
-      html += `<div class="tp-dropdown-item ${rowCls}${disabledCls}${placeholderCls}" data-tp-id="${escapeHtml(sep.id)}">` +
-        `<input type="checkbox" class="tp-sep-cb"${checkedAttr} title="Show/hide">` +
-        `<input type="checkbox" class="tp-tol-cb"${tolCheckedAttr} title="Tolerance filter"> ` +
-        buildLabelHtml(sep, sep.placeholder) +
-        `</div>`;
+    return rows;
+  }
+
+  function dropdownItemHtml(sep, i) {
+    const rowCls = i % 2 === 0 ? 'tp-dropdown-even' : 'tp-dropdown-odd';
+    if (!sep) {
+      return `<div class="tp-dropdown-item tp-dropdown-gap ${rowCls}" title="Not in this file">&nbsp;</div>`;
     }
-    state.tpDropdown.innerHTML = html;
+    const checkedAttr = sep.disabled ? '' : ' checked';
+    const tolCheckedAttr = sep.toleranceEnabled ? ' checked' : '';
+    const disabledCls = sep.disabled ? ' tp-sep-disabled' : '';
+    return `<div class="tp-dropdown-item ${rowCls}${disabledCls}" data-tp-id="${escapeHtml(sep.id)}">` +
+      `<input type="checkbox" class="tp-sep-cb"${checkedAttr} title="Show/hide">` +
+      `<input type="checkbox" class="tp-tol-cb"${tolCheckedAttr} title="Tolerance filter"> ` +
+      buildLabelHtml(sep, false) +
+      `</div>`;
+  }
+
+  /** Rebuild both toolpath lists together so their rows line up. */
+  function rebuildDropdowns() {
+    if (!leftState || !rightState) return;
+    const rows = alignDropdownRows(leftState.separatorPositions, rightState.separatorPositions);
+    let lHtml = '', rHtml = '';
+    rows.forEach(([a, b], i) => { lHtml += dropdownItemHtml(a, i); rHtml += dropdownItemHtml(b, i); });
+    leftState.tpDropdown.innerHTML = lHtml;
+    rightState.tpDropdown.innerHTML = rHtml;
+  }
+
+  // Scroll the two toolpath lists together (same rows, so same scrollTop)
+  let dropdownSyncing = false;
+  function syncDropdownScroll(from) {
+    if (dropdownSyncing) return;
+    const to = from === leftState ? rightState : leftState;
+    if (!to) return;
+    dropdownSyncing = true;
+    to.tpDropdown.scrollTop = from.tpDropdown.scrollTop;
+    requestAnimationFrame(() => { dropdownSyncing = false; });
   }
 
   function buildLabelHtml(sep, isPlaceholder) {
@@ -396,6 +443,7 @@ const Editor = (() => {
         label: sep.label || '',
         labelParts: sep.labelParts || null,
         placeholder: !!sep.placeholder,
+        pairKey: sep.pairKey,
         disabled: !!sep.disabled,
         toleranceEnabled: !!sep.toleranceEnabled,
         offsetTop: r * LINE_HEIGHT
@@ -403,7 +451,7 @@ const Editor = (() => {
     }
 
     renderWindow(state, true);
-    rebuildDropdown(state);
+    rebuildDropdowns();
     updateCurrentHeader(state);
   }
 
