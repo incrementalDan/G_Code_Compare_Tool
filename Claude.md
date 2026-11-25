@@ -195,12 +195,12 @@ Whole added/removed toolpaths do not.
 - Grades lines whose type is coordinate / coordinate-z by max delta:
   - <= minorThreshold: tolerance
   - <= majorThreshold: minor (amber)
-  - >  majorThreshold: critical (red), overMajor = true. Hides with its
-    toolpath (a coordinate change alone never shows through)
+  - >  majorThreshold: bigmove (orange, "Big move"), overMajor = true.
+    Hides with its toolpath. Own legend chip, count and gutter mark
 - Lines already critical / workoffset are never downgraded
 - After this step no op has type coordinate / coordinate-z
-- Sets op.alwaysShow on every workoffset op and every critical op that is
-  not overMajor (plain coordinate deltas hide with the toolpath)
+- Sets op.alwaysShow on every critical / workoffset op (critical always
+  means critical; bigmove is never forced)
 
 **Line alignment** (`alignLines`), per matched toolpath:
 1. Identical lines at start and end are matched directly (fast path)
@@ -565,7 +565,9 @@ A comment diff is skipped only when every side that has a compared comment is la
 Diff engine op types (final, after tolerance):
 - equal: no difference
 - workoffset: work offset change (purple, highest tier)
-- critical: critical field difference (red)
+- critical: critical field difference (red). Always shows through hidden toolpaths
+- bigmove: coordinate change past the major threshold (orange, "Big move").
+  Hides with its toolpath
 - minor: amber
 - tolerance: within minor threshold (faint, not counted)
 - added / removed: one-sided ops
@@ -575,6 +577,7 @@ coordinate / coordinate-z exist only inside the engine, before tolerance grading
 app.js maps these via decoType():
 - critical maps to major (CSS class diff-bg-major)
 - workoffset maps to workoffset (CSS class diff-bg-workoffset)
+- bigmove maps to bigmove (CSS class diff-bg-bigmove)
 - any unknown type maps to major (never hidden by accident)
 
 ## Toolpath Segmentation Rules (Do Not Simplify)
@@ -616,6 +619,7 @@ Tuned for Fusion 360 posts on Brother Speedio. Key behaviors to preserve:
 |---|---|---|---|
 | Work offset | diff-bg-workoffset | #33104a | #c040ff purple |
 | Critical | diff-bg-major | #3b1111 | #c62828 red |
+| Big move | diff-bg-bigmove | #3a2008 | #e8740c orange |
 | Minor | diff-bg-minor | #2e2500 | #c89a10 amber |
 | Within tolerance | diff-bg-tolerance | faint (rgba) | dotted grey |
 | Added | diff-bg-added | #0d2818 | #3fb950 green |

@@ -51,7 +51,7 @@ const App = (() => {
   let toleranceOffIds = new Set(); // toolpath IDs with tolerance filtering turned OFF (default: empty = all ON)
   // Diff categories switched off from the legend: no gutter mark, skipped by F7, line shown plain.
   // Critical is never in here (always shown).
-  const HIDEABLE_CATS = ['workoffset', 'minor', 'added', 'removed'];
+  const HIDEABLE_CATS = ['workoffset', 'bigmove', 'minor', 'added', 'removed'];
   let hiddenCats = new Set();
   // "Test this IF as true / false" choices: line -> { raw, value } per side
   let assumptions = { left: new Map(), right: new Map() };
@@ -335,6 +335,7 @@ N120 M30`;
     switch (opType) {
       case 'critical': return 'major';
       case 'workoffset': return 'workoffset';
+      case 'bigmove': return 'bigmove';
       case 'minor': return 'minor';
       case 'added': return 'added';
       case 'removed': return 'removed';
@@ -700,7 +701,7 @@ N120 M30`;
     diffPositions = [];
 
     // Stats count only what is actually shown
-    const stats = { workoffset: 0, critical: 0, minor: 0, added: 0, removed: 0 };
+    const stats = { workoffset: 0, critical: 0, bigmove: 0, minor: 0, added: 0, removed: 0 };
 
     for (let i = 0; i < currentDiff.length; i++) {
       const op = currentDiff[i];
@@ -755,6 +756,7 @@ N120 M30`;
             if (!hidden) diffPositions.push(i);
             if (dt === 'workoffset') stats.workoffset++;
             else if (dt === 'minor') stats.minor++;
+            else if (dt === 'bigmove') stats.bigmove++;
             else stats.critical++;
           }
         }
@@ -916,6 +918,7 @@ N120 M30`;
   function updateStatusBar(stats, leftLines, rightLines) {
     document.getElementById('stat-workoffset').textContent = stats.workoffset || 0;
     document.getElementById('stat-major').textContent = stats.critical;
+    document.getElementById('stat-bigmove').textContent = stats.bigmove;
     document.getElementById('stat-minor-count').textContent = stats.minor;
     document.getElementById('stat-lines-left').textContent = leftLines;
     document.getElementById('stat-lines-right').textContent = rightLines;

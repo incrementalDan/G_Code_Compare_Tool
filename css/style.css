@@ -14,6 +14,7 @@
 
   --diff-major: #3b1111;
   --diff-workoffset: #33104a;
+  --diff-bigmove: #3a2008;
   --diff-minor: #2e2500;
   --diff-added: #0d2818;
   --diff-removed: #2d0e0e;
@@ -362,6 +363,7 @@ html, body {
 
 .legend-workoffset { background: var(--diff-workoffset); border: 1px solid #c040ff; }
 .legend-critical { background: var(--diff-major); border: 1px solid #c62828; }
+.legend-bigmove { background: var(--diff-bigmove); border: 1px solid #e8740c; }
 .legend-minor { background: var(--diff-minor); border: 1px solid #c89a10; }
 .legend-tolerance { background: rgba(255, 255, 255, 0.07); border: 1px solid #444; }
 
@@ -563,6 +565,9 @@ html, body {
 .diff-bg-major { background-color: var(--diff-major); }
 .diff-bg-major .line-content { border-left: 3px solid #c62828; padding-left: 5px; }
 
+.diff-bg-bigmove { background-color: var(--diff-bigmove); }
+.diff-bg-bigmove .line-content { border-left: 3px solid #e8740c; padding-left: 5px; }
+
 .diff-bg-minor { background-color: var(--diff-minor); }
 .diff-bg-minor .line-content { border-left: 3px solid #c89a10; padding-left: 5px; }
 
@@ -657,6 +662,7 @@ html, body {
 
 .diff-marker.workoffset { background: #c040ff; height: 4px; z-index: 1; }
 .diff-marker.major { background: #c62828; }
+.diff-marker.bigmove { background: #e8740c; }
 .diff-marker.minor { background: #c89a10; }
 
 .diff-marker.added { background: #3fb950; }
@@ -768,6 +774,7 @@ html, body {
 
 .status-workoffset { color: #c040ff; font-weight: 700; }
 .status-major { color: #c62828; }
+.status-bigmove { color: #e8740c; }
 .status-minor-count { color: #c89a10; }
 
 #status-center {
@@ -1067,6 +1074,7 @@ input[type="checkbox"]:focus-visible {
 .info-chip { display: inline-block; padding: 0 6px; font-size: 12px; border-left: 3px solid; }
 .chip-workoffset { background: var(--diff-workoffset); border-color: #c040ff; }
 .chip-critical { background: var(--diff-major); border-color: #c62828; }
+.chip-bigmove { background: var(--diff-bigmove); border-color: #e8740c; }
 .chip-minor { background: var(--diff-minor); border-color: #c89a10; }
 .chip-tolerance { background: rgba(255, 255, 255, 0.07); border-color: transparent; }
 .chip-added { background: var(--diff-added); border-color: #3fb950; }

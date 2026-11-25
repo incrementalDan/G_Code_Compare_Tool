@@ -1530,7 +1530,7 @@ const DiffEngine = (() => {
    * - <= minorThreshold -> 'tolerance' (hidden while the toolpath's TOL is on;
    *                        shown as minor when TOL is off)
    * - <= majorThreshold -> 'minor' (amber)
-   * - >  majorThreshold -> 'critical' (red; hides with its toolpath)
+   * - >  majorThreshold -> 'bigmove' (orange; hides with its toolpath)
    * Lines that already have a critical/work-offset diff are never downgraded.
    * Missing-axis diffs are already critical in classifyTokens.
    */
@@ -1548,7 +1548,7 @@ const DiffEngine = (() => {
       const hasMinorDiff = op.tokenDiffs.some(d => d.severity === 'minor');
 
       if (maxDelta > majorThreshold + FP_EPS) {
-        op.type = 'critical';
+        op.type = 'bigmove';
         op.overMajor = true;
       } else if (maxDelta > minorThreshold + FP_EPS || hasMinorDiff) {
         op.type = 'minor';
@@ -2040,10 +2040,9 @@ const DiffEngine = (() => {
     applyToleranceClassification(allOps, minorThreshold, majorThreshold);
 
     // alwaysShow: the diff must surface even inside a hidden toolpath.
-    // A line that is red only because a coordinate moved past the major
-    // tolerance (overMajor) does not count: hiding a toolpath hides its moves.
+    // Critical always means critical. Big moves (bigmove) hide with their toolpath.
     for (const op of allOps) {
-      if (op.type === 'workoffset' || (op.type === 'critical' && !op.overMajor)) op.alwaysShow = true;
+      if (op.type === 'critical' || op.type === 'workoffset') op.alwaysShow = true;
     }
 
     return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches, leftParsed, rightParsed };
@@ -2184,21 +2183,22 @@ const DiffEngine = (() => {
   // =====================================================
 
   function countStats(diffResult) {
-    let critical = 0, added = 0, removed = 0, minor = 0;
+    let critical = 0, added = 0, removed = 0, minor = 0, bigmove = 0;
     for (const op of diffResult) {
       if (op.type === 'critical' || op.type === 'workoffset') critical++;
+      else if (op.type === 'bigmove') bigmove++;
       else if (op.type === 'minor') minor++;
       else if (op.type === 'added') added++;
       else if (op.type === 'removed') removed++;
     }
-    return { critical, minor, added, removed };
+    return { critical, bigmove, minor, added, removed };
   }
 
   // =====================================================
   // Change summary (per matched toolpath)
   // =====================================================
 
-  const FLAGGED_TYPES = new Set(['critical', 'minor', 'workoffset', 'added', 'removed']);
+  const FLAGGED_TYPES = new Set(['critical', 'bigmove', 'minor', 'workoffset', 'added', 'removed']);
   const round4 = v => Math.round(v * 10000) / 10000;
 
   /** Vertical-plane move: G18/G19 on the line, or a K arc word (XZ / YZ arc). */
