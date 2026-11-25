@@ -186,6 +186,12 @@ const Info = (() => {
   </table>
   <p>TOL is set per toolpath (box on each toolpath row) or for all at once (TOL button in the header bar).</p>
 
+  <h4>Accept a change <span class="info-where">click a changed word</span></h4>
+  <p>For a change you expect (G54 → G56, Z.245 → Z.345): click the word, then <b>Accept everywhere</b>.
+  Every line with that exact old → new change goes plain and is not counted. Other changes on the
+  same line still show. Accepted rules are listed in the legend strip: ✕ to undo, Show to see them again.
+  Not saved between sessions.</p>
+
   <h4>Show / hide toolpath <span class="info-where">☑ on each toolpath row</span></h4>
   <p>Untick to hide that toolpath's diffs and dim its lines. Use it for toolpaths you
   already reviewed or expect to change. Anything marked ${ALWAYS} still shows.

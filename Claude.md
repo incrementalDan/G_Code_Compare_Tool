@@ -505,6 +505,20 @@ scroll through code) is not built. Evaluate whether the dropdown is sufficient.
 
 ---
 
+## Accepted Changes ("find and accept")
+
+- Click a changed word, then **Accept everywhere** in the info panel
+- Rule = exact old -> new words for one token diff: `DiffEngine.acceptKey(d)`
+  (field + words, numbers in one form: Z.245 = Z0.2450)
+- Whole file, paired lines only (added / removed lines are never accepted)
+- Not saved. Cleared on New and Swap
+- Engine: `opts.accepts` (Set of keys) -> `applyAccepts` marks `d.accepted`,
+  re-grades the line from what is left. Nothing left -> type 'accepted'
+  (acceptedType = old type). Runs before alwaysShow, so accepted never forces
+- app.js: accepted shows plain (like within tolerance), not counted, no F7 stop.
+  Legend strip `#accept-banner`: rules with line counts, Show (old colors), Clear all
+- Change summary ignores accepted diffs (no shift / feed tag from them)
+
 ## Critical Difference Rules
 
 These diffs must always surface even when a toolpath's Show/Hide is OFF.

@@ -694,5 +694,41 @@ test('vertical arc lead-in swapped for a line is tagged lead-in', () => {
   eq(tpSum(L, R).tags.includes('lead-in'), true);
 });
 
+console.log('\nAccepted changes');
+const keysOf = (L, R) => {
+  const ks = [];
+  for (const o of diff(L, R).ops) for (const d of (o.tokenDiffs || [])) { const k = DE.acceptKey(d); if (k) ks.push(k); }
+  return ks;
+};
+const diffAcc = (L, R, keys) => DE.computeSemanticDiff(L, R, {
+  rules: DEFAULT_RULES, minorThreshold: 0.001, majorThreshold: 0.01, accepts: new Set(keys)
+});
+test('accept key ignores number format (Z.245 = Z0.2450)', () =>
+  eq(keysOf(['G0 Z.245'], ['G0 Z.345'])[0], keysOf(['G0 Z0.2450'], ['G0 Z0.3450'])[0]));
+test('accepted G54 -> G56 drops out everywhere', () => {
+  const L = ['G90 G54 G0 X1.', 'G0 Z1.', 'G90 G54 G0 X2.'], R = ['G90 G56 G0 X1.', 'G0 Z1.', 'G90 G56 G0 X2.'];
+  const r = diffAcc(L, R, keysOf(['G54'], ['G56']));
+  eq(r.ops.map(o => o.type).join(','), 'accepted,equal,accepted');
+  eq(r.ops[0].acceptedType, 'workoffset');
+  eq(!!r.ops[0].alwaysShow, false);
+});
+test('accept is exact: G54 -> G57 still flagged', () =>
+  eq(diffAcc(['G54'], ['G57'], keysOf(['G54'], ['G56'])).ops[0].type, 'workoffset'));
+test('accept is exact: Z.245 -> Z.346 still flagged', () =>
+  eq(diffAcc(['G0 Z.245'], ['G0 Z.346'], keysOf(['G0 Z.245'], ['G0 Z.345'])).ops[0].type, 'bigmove'));
+test('accepted Z leaves the feed change on the line critical', () => {
+  const op = diffAcc(['G1 Z.245 F10.'], ['G1 Z.345 F20.'], keysOf(['G0 Z.245'], ['G0 Z.345'])).ops[0];
+  eq(op.type, 'critical'); eq(op.alwaysShow, true);
+});
+test('accepted Z with a small X change re-grades by tolerance', () =>
+  eq(diffAcc(['G0 X1. Z.245'], ['G0 X1.005 Z.345'], keysOf(['G0 Z.245'], ['G0 Z.345'])).ops[0].type, 'minor'));
+test('accept label shows words as written', () =>
+  eq(DE.acceptLabel(diff(['G0 Z.245'], ['G0 Z.345']).ops[0].tokenDiffs[0]), 'Z.245 → Z.345'));
+test('accepted Z change is not tagged as a shift', () => {
+  const L = ['G0 X1. Z.245', 'G0 X2. Z.245', 'G0 X3. Z.245'], R = ['G0 X1. Z.345', 'G0 X2. Z.345', 'G0 X3. Z.345'];
+  const r = diffAcc(L, R, keysOf(['G0 Z.245'], ['G0 Z.345']));
+  eq(DE.summarizeChanges(r).some(s => s.shifts.length), false);
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

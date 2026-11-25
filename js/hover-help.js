@@ -232,8 +232,29 @@ const HoverHelp = (() => {
     return p && p.raw === text ? p : null;
   }
 
-  /** Info about the spot at column col of a line, or null. */
+  /**
+   * Info about the spot at column col of a line, or null. A changed word also
+   * gets an Accept / Un-accept button (exact old -> new, whole file).
+   */
   function lookup(side, line, text, col) {
+    let info = baseLookup(side, line, text, col);
+    const opts = typeof App !== 'undefined' && App.acceptOptions ? App.acceptOptions(side, line, col) : [];
+    if (!opts.length) return info;
+    if (!info) info = { title: 'Change', meaning: 'This word changed between the files.', rows: [] };
+    info = { ...info, rows: [...info.rows], actions: [...(info.actions || [])] };
+    for (const o of opts) {
+      info.rows.push([o.accepted ? 'Accepted' : 'Change', o.label]);
+      info.actions.push({ act: 'accept', key: o.key, label: o.label,
+        cls: o.accepted ? 'ht-plain' : 'ht-accept',
+        text: (o.accepted ? 'Un-accept ' : 'Accept everywhere: ') + o.label });
+    }
+    info.explain = (info.explain ? info.explain + ' ' : '') +
+      'Accept hides this exact change (same old and new value) on every line of the file. ' +
+      'Listed in the legend strip; click there to undo.';
+    return info;
+  }
+
+  function baseLookup(side, line, text, col) {
     if (col < 0 || col >= text.length) return null;
     const parsed = DiffEngine.parseGCodeLine(text);
     const tok = parsed.tokens.find(t => col >= t.start && col < t.end);
@@ -492,7 +513,7 @@ const HoverHelp = (() => {
     tipActions = info.actions || [];
     if (tipActions.length) {
       left += '<div class="ht-actions">' + tipActions.map((a, i) =>
-        `<button class="ht-btn ${a.cls || ''}" data-i="${i}">${esc(a.label)}</button>`).join('') + '</div>';
+        `<button class="ht-btn ${a.cls || ''}" data-i="${i}">${esc(a.text || a.label)}</button>`).join('') + '</div>';
     }
     let right = `<div class="ht-meaning">${esc(info.meaning)}</div>`;
     if (info.explain) right += `<div class="ht-explain">${esc(info.explain)}</div>`;
@@ -506,6 +527,7 @@ const HoverHelp = (() => {
   function runAction(a) {
     if (typeof App === 'undefined') return;
     if (a.act === 'assume') App.setAssumption(a.side, a.line, a.value < 0 ? null : !!a.value);
+    if (a.act === 'accept') App.toggleAccept(a.key, a.label);
     if (a.go !== null && a.go !== undefined) App.jumpTo(a.side, a.go, a.line);
     // Values changed: refresh the pinned item from the new compare
     if (pinned && pinned.pt) {

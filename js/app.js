@@ -55,6 +55,10 @@ const App = (() => {
   let hiddenCats = new Set();
   // "Test this IF as true / false" choices: line -> { raw, value } per side
   let assumptions = { left: new Map(), right: new Map() };
+  // Accepted changes: acceptKey -> label ("G54 -> G56"). Whole file, exact match,
+  // not saved between sessions. showAccepted shows them in their old colors.
+  let accepts = new Map();
+  let showAccepted = false;
 
   // === Example data ===
   const EXAMPLE_LEFT = `O1000 (PART PROGRAM - KNOWN GOOD)
@@ -395,6 +399,7 @@ N120 M30`;
    * Severity rules themselves live in diff-engine.js (classifyTokens).
    */
   function effectiveType(op) {
+    if (op.type === 'accepted') return showAccepted ? op.acceptedType : 'tolerance';
     if (op.type !== 'tolerance') return op.type;
     return isToleranceOff(op) ? 'minor' : 'tolerance';
   }
@@ -497,6 +502,7 @@ N120 M30`;
     const diffResult = DiffEngine.computeSemanticDiff(leftLines, rightLines, {
       assumeLeft: assumptions.left,
       assumeRight: assumptions.right,
+      accepts: new Set(accepts.keys()),
       rules: settings,
       minorThreshold: settings.minorThreshold,
       majorThreshold: settings.majorThreshold
@@ -569,6 +575,83 @@ N120 M30`;
     return out;
   }
 
+  // === Accepted changes ("find and accept") ===
+  /** Token diffs to highlight: accepted ones are left plain unless shown. */
+  function shownTokenDiffs(op) {
+    if (showAccepted || !op.tokenDiffs) return op.tokenDiffs;
+    return op.tokenDiffs.filter(d => !d.accepted);
+  }
+
+  /** Changes under column col of a line that can be accepted: [{ key, label, accepted }]. */
+  function acceptOptions(side, line, col) {
+    const idxKey = side === 'left' ? 'leftIdx' : 'rightIdx';
+    const tokKey = side === 'left' ? 'leftTokens' : 'rightTokens';
+    const op = currentDiff.find(o => o[idxKey] === line && o.tokenDiffs &&
+      o.leftIdx !== undefined && o.rightIdx !== undefined);
+    if (!op) return [];
+    const out = [];
+    for (const d of op.tokenDiffs) {
+      if (!d.accepted && (op.type === 'tolerance' || op.type === 'equal')) continue;
+      const toks = d[tokKey] || [];
+      if (!toks.some(t => col >= t.start && col < t.end)) continue;
+      const key = DiffEngine.acceptKey(d);
+      if (!key || out.some(o => o.key === key)) continue;
+      out.push({ key, label: accepts.get(key) || DiffEngine.acceptLabel(d), accepted: accepts.has(key) });
+    }
+    return out;
+  }
+
+  function toggleAccept(key, label) {
+    if (accepts.has(key)) accepts.delete(key);
+    else accepts.set(key, label);
+    runDiff();
+    updateAcceptBanner();
+  }
+
+  function clearAccepts(rerun) {
+    const had = accepts.size > 0;
+    accepts = new Map();
+    showAccepted = false;
+    updateAcceptBanner();
+    if (had && rerun) runDiff();
+  }
+
+  /** Lines each accept rule matched in the last compare. */
+  function acceptCounts() {
+    const n = new Map();
+    for (const op of currentDiff) {
+      if (!op.tokenDiffs) continue;
+      const seen = new Set();
+      for (const d of op.tokenDiffs) {
+        if (!d.accepted) continue;
+        const k = DiffEngine.acceptKey(d);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        n.set(k, (n.get(k) || 0) + 1);
+      }
+    }
+    return n;
+  }
+
+  function updateAcceptBanner() {
+    const el = document.getElementById('accept-banner');
+    if (!el) return;
+    if (!accepts.size) { el.hidden = true; el.innerHTML = ''; return; }
+    const counts = acceptCounts();
+    const items = [...accepts].map(([key, label]) =>
+      `<button data-key="${escAttr(key)}" title="Stop accepting this change">` +
+      `${escHtml(label)} (${counts.get(key) || 0}) \u2715</button>`);
+    el.hidden = false;
+    el.innerHTML = `<span title="Exact old \u2192 new changes you accepted. Whole file. Not saved.">Accepted:</span>${items.join('')}` +
+      `<button data-show="1" title="Show accepted changes in their normal colors">${showAccepted ? 'Hide' : 'Show'}</button>` +
+      `<button data-clear-all="1">Clear all</button>`;
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+
   // === IF tests ("what if this condition is true / false") ===
   function setAssumption(side, line, value) {
     const lines = Editor.getValue(side).split('\n');
@@ -630,6 +713,14 @@ N120 M30`;
       if (!b) return;
       if (b.dataset.clearAll) clearAssumptions(true);
       else setAssumption(b.dataset.side, parseInt(b.dataset.line, 10), null);
+    });
+    const acc = document.getElementById('accept-banner');
+    if (acc) acc.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.clearAll) { clearAccepts(true); return; }
+      if (b.dataset.show) { showAccepted = !showAccepted; applyDecorations(); updateAcceptBanner(); return; }
+      if (b.dataset.key) toggleAccept(b.dataset.key);
     });
   }
 
@@ -748,8 +839,9 @@ N120 M30`;
           // A category switched off in the legend looks like a within-tolerance line
           const hidden = hiddenCats.has(dt);
           const shownType = hidden ? 'tolerance' : dt;
-          leftDecos.push({ line: op.leftIdx, type: shownType, tokenDiffs: op.tokenDiffs });
-          rightDecos.push({ line: op.rightIdx, type: shownType, tokenDiffs: op.tokenDiffs });
+          const tds = shownTokenDiffs(op);
+          leftDecos.push({ line: op.leftIdx, type: shownType, tokenDiffs: tds });
+          rightDecos.push({ line: op.rightIdx, type: shownType, tokenDiffs: tds });
           // Tolerance diffs get decoration but NOT navigation/stats.
           // Hidden categories still count, but get no gutter mark or F7 stop.
           if (etype !== 'tolerance') {
@@ -1046,6 +1138,7 @@ N120 M30`;
     toleranceOffIds.clear();
     Editor.setTolAllActive(true);
     clearAssumptions(false);
+    clearAccepts(false);
     lastDiffResult = null;
     clearDecorations();
     applyAnnotations();
@@ -1061,8 +1154,9 @@ N120 M30`;
     const leftEol = Editor.getEol('left');
     const rightEol = Editor.getEol('right');
 
-    // Sides flip, so per-toolpath choices and IF tests no longer apply
+    // Sides flip, so per-toolpath choices, IF tests and accepts no longer apply
     clearAssumptions(false);
+    clearAccepts(false);
     disabledToolpathIds.clear();
     toleranceOffIds.clear();
     currentToolpaths = { left: [], right: [] };
@@ -1138,5 +1232,5 @@ N120 M30`;
   /** Grouped change summary from the last compare (used by the Changes popup). */
   function getSummaries() { return lastSummaries; }
 
-  return { runDiff, loadExample, getDiffContext, getSummaries, setAssumption, jumpTo };
+  return { runDiff, loadExample, getDiffContext, getSummaries, setAssumption, jumpTo, acceptOptions, toggleAccept };
 })();

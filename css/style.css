@@ -813,7 +813,18 @@ html, body {
   font-family: var(--font-mono);
 }
 #test-banner[hidden] { display: none; }
-#test-banner button, #jump-back {
+#accept-banner {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #7ee2a8;
+  font-family: var(--font-mono);
+}
+#test-banner:not([hidden]) + #accept-banner { margin-left: 16px; }
+#accept-banner[hidden] { display: none; }
+#test-banner button, #accept-banner button, #jump-back {
   background: #3a3a3d;
   color: var(--text);
   border: 1px solid #555;
@@ -822,7 +833,7 @@ html, body {
   padding: 1px 7px;
   cursor: pointer;
 }
-#test-banner button:hover, #jump-back:hover { background: #4a4a4f; }
+#test-banner button:hover, #accept-banner button:hover, #jump-back:hover { background: #4a4a4f; }
 #jump-back {
   position: fixed;
   bottom: 40px;
@@ -896,6 +907,7 @@ html, body {
 #info-panel .ht-btn.ht-true { background: #2e7d32; }
 #info-panel .ht-btn.ht-false { background: #8e3b3b; }
 #info-panel .ht-btn.ht-plain { background: #3a3a3d; border: 1px solid #555; }
+#info-panel .ht-btn.ht-accept { background: #2e7d32; }
 #info-panel .ht-link { display: inline-block; margin-top: 4px; color: #4fc1ff; text-decoration: none; font-size: 11px; }
 #info-panel .ht-link:hover { text-decoration: underline; }
 @media (max-width: 700px) {
