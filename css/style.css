@@ -908,6 +908,18 @@ html, body {
 #info-panel .ht-btn.ht-false { background: #8e3b3b; }
 #info-panel .ht-btn.ht-plain { background: #3a3a3d; border: 1px solid #555; }
 #info-panel .ht-btn.ht-accept { background: #2e7d32; }
+#info-panel .ht-change {
+  border: 1px solid #2e7d32;
+  border-left: 3px solid #3fb950;
+  background: rgba(46, 125, 50, 0.08);
+  padding: 6px 8px;
+  margin-bottom: 10px;
+}
+#info-panel .ht-change-head { color: #7ee2a8; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+#info-panel .ht-change-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+#info-panel .ht-change-val { font-family: var(--font-mono); color: var(--text); }
+#info-panel .ht-change-tag { color: #7ee2a8; font-size: 11px; }
+#info-panel .ht-change-note { color: #9a9a9a; font-size: 11px; }
 #info-panel .ht-link { display: inline-block; margin-top: 4px; color: #4fc1ff; text-decoration: none; font-size: 11px; }
 #info-panel .ht-link:hover { text-decoration: underline; }
 @media (max-width: 700px) {

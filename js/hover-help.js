@@ -234,24 +234,15 @@ const HoverHelp = (() => {
 
   /**
    * Info about the spot at column col of a line, or null. A changed word also
-   * gets an Accept / Un-accept button (exact old -> new, whole file).
+   * gets info.change: [{ key, label, accepted }] for the Accept box.
    */
   function lookup(side, line, text, col) {
     let info = baseLookup(side, line, text, col);
     const opts = typeof App !== 'undefined' && App.acceptOptions ? App.acceptOptions(side, line, col) : [];
     if (!opts.length) return info;
     if (!info) info = { title: 'Change', meaning: 'This word changed between the files.', rows: [] };
-    info = { ...info, rows: [...info.rows], actions: [...(info.actions || [])] };
-    for (const o of opts) {
-      info.rows.push([o.accepted ? 'Accepted' : 'Change', o.label]);
-      info.actions.push({ act: 'accept', key: o.key, label: o.label,
-        cls: o.accepted ? 'ht-plain' : 'ht-accept',
-        text: (o.accepted ? 'Un-accept ' : 'Accept everywhere: ') + o.label });
-    }
-    info.explain = (info.explain ? info.explain + ' ' : '') +
-      'Accept hides this exact change (same old and new value) on every line of the file. ' +
-      'Listed in the legend strip; click there to undo.';
-    return info;
+    // Kept apart from the code explanation: shown in its own box by show()
+    return { ...info, change: opts };
   }
 
   function baseLookup(side, line, text, col) {
@@ -457,6 +448,7 @@ const HoverHelp = (() => {
   let pinned = null;      // { info, where } from the last click
   let shown = null;       // what the panel shows right now
   let tipActions = [];
+  let changeOpts = [];
   let expanded = false;
 
   function esc(s) {
@@ -505,6 +497,17 @@ const HoverHelp = (() => {
     panel.querySelector('.ip-where').textContent = entry.where;
 
     let left = '';
+    changeOpts = info.change || [];
+    if (changeOpts.length) {
+      left += '<div class="ht-change"><div class="ht-change-head">This change</div>' +
+        changeOpts.map((o, i) =>
+          `<div class="ht-change-row"><span class="ht-change-val">${esc(o.label)}</span>` +
+          (o.accepted ? '<span class="ht-change-tag">Accepted</span>' : '') +
+          `<button class="ht-btn ${o.accepted ? 'ht-plain' : 'ht-accept'}" data-c="${i}">` +
+          `${o.accepted ? 'Un-accept' : 'Accept everywhere'}</button></div>`).join('') +
+        '<div class="ht-change-note">Accept hides this exact old \u2192 new change on every line of the file. ' +
+        'Undo from the legend strip.</div></div>';
+    }
     if (info.rows.length) {
       left += '<div class="ht-rows">';
       for (const [k, v] of info.rows) left += `<div class="ht-row"><span class="ht-key">${esc(k)}:</span> ${esc(v)}</div>`;
@@ -527,7 +530,6 @@ const HoverHelp = (() => {
   function runAction(a) {
     if (typeof App === 'undefined') return;
     if (a.act === 'assume') App.setAssumption(a.side, a.line, a.value < 0 ? null : !!a.value);
-    if (a.act === 'accept') App.toggleAccept(a.key, a.label);
     if (a.go !== null && a.go !== undefined) App.jumpTo(a.side, a.go, a.line);
     // Values changed: refresh the pinned item from the new compare
     if (pinned && pinned.pt) {
@@ -591,6 +593,11 @@ const HoverHelp = (() => {
 
     panel.addEventListener('click', (e) => {
       const b = e.target.closest('.ht-btn');
+      if (b && b.dataset.c !== undefined) {
+        const o = changeOpts[+b.dataset.c];
+        if (o) { App.toggleAccept(o.key, o.label); runAction({}); }
+        return;
+      }
       if (b) { const a = tipActions[+b.dataset.i]; if (a) runAction(a); return; }
       if (e.target.closest('.ip-close')) { e.stopPropagation(); close(); return; }
       if (e.target.closest('.ip-head')) { if (expanded) collapse(); else open(); }
