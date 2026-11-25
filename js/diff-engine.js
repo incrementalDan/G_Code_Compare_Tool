@@ -1530,7 +1530,7 @@ const DiffEngine = (() => {
    * - <= minorThreshold -> 'tolerance' (hidden while the toolpath's TOL is on;
    *                        shown as minor when TOL is off)
    * - <= majorThreshold -> 'minor' (amber)
-   * - >  majorThreshold -> 'critical' (red, always surfaces)
+   * - >  majorThreshold -> 'critical' (red; hides with its toolpath)
    * Lines that already have a critical/work-offset diff are never downgraded.
    * Missing-axis diffs are already critical in classifyTokens.
    */
@@ -2039,9 +2039,11 @@ const DiffEngine = (() => {
     // Grade coordinate diffs by tolerance
     applyToleranceClassification(allOps, minorThreshold, majorThreshold);
 
-    // alwaysShow: the diff must surface even inside a hidden toolpath
+    // alwaysShow: the diff must surface even inside a hidden toolpath.
+    // A line that is red only because a coordinate moved past the major
+    // tolerance (overMajor) does not count: hiding a toolpath hides its moves.
     for (const op of allOps) {
-      if (op.type === 'critical' || op.type === 'workoffset') op.alwaysShow = true;
+      if (op.type === 'workoffset' || (op.type === 'critical' && !op.overMajor)) op.alwaysShow = true;
     }
 
     return { ops: allOps, leftToolpaths, rightToolpaths, tpMatches, leftParsed, rightParsed };

@@ -195,10 +195,12 @@ Whole added/removed toolpaths do not.
 - Grades lines whose type is coordinate / coordinate-z by max delta:
   - <= minorThreshold: tolerance
   - <= majorThreshold: minor (amber)
-  - >  majorThreshold: critical (red), overMajor = true, always surfaces
+  - >  majorThreshold: critical (red), overMajor = true. Hides with its
+    toolpath (a coordinate change alone never shows through)
 - Lines already critical / workoffset are never downgraded
 - After this step no op has type coordinate / coordinate-z
-- Sets op.alwaysShow on every critical / workoffset op
+- Sets op.alwaysShow on every workoffset op and every critical op that is
+  not overMajor (plain coordinate deltas hide with the toolpath)
 
 **Line alignment** (`alignLines`), per matched toolpath:
 1. Identical lines at start and end are matched directly (fast path)

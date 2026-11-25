@@ -52,8 +52,16 @@ test('unknown word (U) change is critical', () => eq(types(['G1 X1. U1.'], ['G1 
 console.log('Tolerance');
 test('within minor -> tolerance', () => eq(types(['G1 X1.0000'], ['G1 X1.0005']), 'tolerance'));
 test('between minor and major -> minor', () => eq(types(['G1 X1.000'], ['G1 X1.005']), 'minor'));
-test('beyond major -> critical, alwaysShow', () => {
+test('beyond major -> critical, hides with its toolpath', () => {
   const op = diff(['G1 X1.'], ['G1 X1.5']).ops[0];
+  eq(op.type, 'critical'); eq(!!op.alwaysShow, false);
+});
+test('beyond major plus feed change still shows through', () => {
+  const op = diff(['G1 X1. F10.'], ['G1 X1.5 F20.']).ops[0];
+  eq(op.type, 'critical'); eq(op.alwaysShow, true);
+});
+test('G91 axis change still shows through', () => {
+  const op = diff(['G91 G1 X1.'], ['G91 G1 X1.5']).ops[0];
   eq(op.type, 'critical'); eq(op.alwaysShow, true);
 });
 test('no "coordinate" type reaches the UI', () => {
