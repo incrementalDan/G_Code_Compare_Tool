@@ -34,11 +34,13 @@
   <div id="color-legend">
     <span class="legend-item" data-cat="workoffset"><span class="legend-swatch legend-workoffset"></span>Work Offset</span>
     <span class="legend-item"><span class="legend-swatch legend-critical"></span>Critical</span>
+    <span class="legend-item" data-cat="bigmove"><span class="legend-swatch legend-bigmove"></span>Big Move</span>
     <span class="legend-item" data-cat="minor"><span class="legend-swatch legend-minor"></span>Minor</span>
     <span class="legend-item"><span class="legend-swatch legend-tolerance"></span>Within Tol.</span>
     <span class="legend-item" data-cat="added"><span class="legend-swatch legend-added"></span>Added</span>
     <span class="legend-item" data-cat="removed"><span class="legend-swatch legend-removed"></span>Removed</span>
     <span id="test-banner" hidden></span>
+    <span id="accept-banner" hidden></span>
   </div>
   <button id="jump-back" hidden></button>
 
@@ -164,6 +166,7 @@
       <span>Toolpaths: <span id="stat-toolpaths-left">0</span> / <span id="stat-toolpaths-right">0</span></span>
       <span>Work offset: <span class="status-workoffset" id="stat-workoffset">0</span></span>
       <span>Critical: <span class="status-major" id="stat-major">0</span></span>
+      <span>Big move: <span class="status-bigmove" id="stat-bigmove">0</span></span>
       <span>Minor: <span class="status-minor-count" id="stat-minor-count">0</span></span>
       <span>Lines: <span id="stat-lines-left">0</span> / <span id="stat-lines-right">0</span></span>
     </div>

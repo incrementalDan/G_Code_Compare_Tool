@@ -1356,18 +1356,76 @@ const DiffEngine = (() => {
       }
     }
 
-    // Overall severity: workoffset > critical > coordinate-z > coordinate > minor
-    let severity = 'equal';
-    if (tokenDiffs.length > 0) {
-      const has = sev => tokenDiffs.some(d => d.severity === sev);
-      if (has('workoffset')) severity = 'workoffset';
-      else if (has('critical')) severity = 'critical';
-      else if (has('coordinate-z')) severity = 'coordinate-z';
-      else if (has('coordinate')) severity = 'coordinate';
-      else severity = 'minor';
-    }
+    return { severity: lineSeverity(tokenDiffs), tokenDiffs };
+  }
 
-    return { severity, tokenDiffs };
+  /** Overall line severity: workoffset > critical > coordinate-z > coordinate > minor. */
+  function lineSeverity(tokenDiffs) {
+    if (tokenDiffs.length === 0) return 'equal';
+    const has = sev => tokenDiffs.some(d => d.severity === sev);
+    if (has('workoffset')) return 'workoffset';
+    if (has('critical')) return 'critical';
+    if (has('coordinate-z')) return 'coordinate-z';
+    if (has('coordinate')) return 'coordinate';
+    return 'minor';
+  }
+
+  // =====================================================
+  // Accepted changes ("find and accept")
+  // =====================================================
+
+  /** A word as compared: letter + number in one form (Z.245 = Z0.2450, G01 = G1). */
+  function acceptWord(t) {
+    const txt = String(t.text).replace(/\s+/g, '').toUpperCase();
+    const m = /^([A-Z])([+-]?(?:\d+\.?\d*|\.\d+))$/.exec(txt);
+    return m ? m[1] + String(parseFloat(m[2])) : txt;
+  }
+
+  /**
+   * Exact old -> new key for one token diff, e.g. "workOffset|G54>G56" or
+   * "axis-Z|Z0.245>Z0.345". null when the diff has no words to match on.
+   */
+  function acceptKey(d) {
+    const L = (d.leftTokens || []).map(acceptWord);
+    const R = (d.rightTokens || []).map(acceptWord);
+    if (!L.length && !R.length) return null;
+    return d.field + '|' + L.join(' ') + '>' + R.join(' ');
+  }
+
+  /** Readable label for an accept rule, as written in the files: "G54 -> G56". */
+  function acceptLabel(d) {
+    const w = toks => (toks && toks.length) ? toks.map(t => String(t.text).trim()).join(' ') : '(none)';
+    return w(d.leftTokens) + ' \u2192 ' + w(d.rightTokens);
+  }
+
+  /**
+   * Mark token diffs the user accepted (exact old -> new match, whole file)
+   * and re-grade each line from what is left. A line with nothing left becomes
+   * 'accepted' (acceptedType keeps what it was). Only paired lines; added /
+   * removed lines are never accepted.
+   */
+  function applyAccepts(ops, accepts, minorThreshold, majorThreshold) {
+    if (!accepts || !accepts.size) return;
+    const GRADED = new Set(['workoffset', 'critical', 'bigmove', 'minor', 'tolerance']);
+    for (const op of ops) {
+      if (!op.tokenDiffs || !GRADED.has(op.type)) continue;
+      let hit = false;
+      for (const d of op.tokenDiffs) {
+        const k = acceptKey(d);
+        if (k && accepts.has(k)) { d.accepted = true; hit = true; }
+      }
+      if (!hit) continue;
+      const rest = op.tokenDiffs.filter(d => !d.accepted);
+      const sev = lineSeverity(rest);
+      if (sev === 'equal') {
+        op.acceptedType = op.type;
+        op.type = 'accepted';
+        continue;
+      }
+      op.type = sev;
+      delete op.overMajor;
+      applyToleranceClassification([op], minorThreshold, majorThreshold);
+    }
   }
 
   /**
@@ -1530,7 +1588,7 @@ const DiffEngine = (() => {
    * - <= minorThreshold -> 'tolerance' (hidden while the toolpath's TOL is on;
    *                        shown as minor when TOL is off)
    * - <= majorThreshold -> 'minor' (amber)
-   * - >  majorThreshold -> 'critical' (red, always surfaces)
+   * - >  majorThreshold -> 'bigmove' (orange; hides with its toolpath)
    * Lines that already have a critical/work-offset diff are never downgraded.
    * Missing-axis diffs are already critical in classifyTokens.
    */
@@ -1540,15 +1598,16 @@ const DiffEngine = (() => {
 
       let maxDelta = 0;
       for (const cd of op.tokenDiffs) {
+        if (cd.accepted) continue;
         if ((cd.severity === 'coordinate' || cd.severity === 'coordinate-z') && cd.delta > maxDelta) {
           maxDelta = cd.delta;
         }
       }
       op.maxDelta = maxDelta;
-      const hasMinorDiff = op.tokenDiffs.some(d => d.severity === 'minor');
+      const hasMinorDiff = op.tokenDiffs.some(d => d.severity === 'minor' && !d.accepted);
 
       if (maxDelta > majorThreshold + FP_EPS) {
-        op.type = 'critical';
+        op.type = 'bigmove';
         op.overMajor = true;
       } else if (maxDelta > minorThreshold + FP_EPS || hasMinorDiff) {
         op.type = 'minor';
@@ -2039,7 +2098,11 @@ const DiffEngine = (() => {
     // Grade coordinate diffs by tolerance
     applyToleranceClassification(allOps, minorThreshold, majorThreshold);
 
-    // alwaysShow: the diff must surface even inside a hidden toolpath
+    // Changes the user accepted (opts.accepts: Set of acceptKey) drop out
+    applyAccepts(allOps, opts.accepts, minorThreshold, majorThreshold);
+
+    // alwaysShow: the diff must surface even inside a hidden toolpath.
+    // Critical always means critical. Big moves (bigmove) hide with their toolpath.
     for (const op of allOps) {
       if (op.type === 'critical' || op.type === 'workoffset') op.alwaysShow = true;
     }
@@ -2182,21 +2245,22 @@ const DiffEngine = (() => {
   // =====================================================
 
   function countStats(diffResult) {
-    let critical = 0, added = 0, removed = 0, minor = 0;
+    let critical = 0, added = 0, removed = 0, minor = 0, bigmove = 0;
     for (const op of diffResult) {
       if (op.type === 'critical' || op.type === 'workoffset') critical++;
+      else if (op.type === 'bigmove') bigmove++;
       else if (op.type === 'minor') minor++;
       else if (op.type === 'added') added++;
       else if (op.type === 'removed') removed++;
     }
-    return { critical, minor, added, removed };
+    return { critical, bigmove, minor, added, removed };
   }
 
   // =====================================================
   // Change summary (per matched toolpath)
   // =====================================================
 
-  const FLAGGED_TYPES = new Set(['critical', 'minor', 'workoffset', 'added', 'removed']);
+  const FLAGGED_TYPES = new Set(['critical', 'bigmove', 'minor', 'workoffset', 'added', 'removed']);
   const round4 = v => Math.round(v * 10000) / 10000;
 
   /** Vertical-plane move: G18/G19 on the line, or a K arc word (XZ / YZ arc). */
@@ -2241,7 +2305,10 @@ const DiffEngine = (() => {
         const moves = p => p && (Object.keys(p.axes).length + Object.keys(p.arcParams).length) > 0;
         if (moves(pl) || moves(pr)) motionLines++;
         if (pl && pr) {
+          // Accepted changes are not part of any shift
+          const acc = new Set((op.tokenDiffs || []).filter(d => d.accepted).map(d => d.field));
           for (const a of ['X', 'Y', 'Z']) {
+            if (acc.has('axis-' + a)) continue;
             const lv = pl.axes[a], rv = pr.axes[a];
             if (typeof lv !== 'number' || typeof rv !== 'number') continue;
             axisTotal[a]++;
@@ -2254,7 +2321,7 @@ const DiffEngine = (() => {
         if (!FLAGGED_TYPES.has(op.type)) return;
         sum.flagged++;
         for (const t of op.tokenDiffs || []) {
-          if (t.field !== 'feed' || t.severity === 'equal') continue;
+          if (t.field !== 'feed' || t.severity === 'equal' || t.accepted) continue;
           const key = t.leftVal + '>' + t.rightVal;
           const g = feedMap.get(key) || { from: t.leftVal, to: t.rightVal, count: 0, first: at };
           g.count++;
@@ -2292,7 +2359,7 @@ const DiffEngine = (() => {
         const at = base + k;
         const pl = op.leftIdx !== undefined ? leftParsed[op.leftIdx] : null;
         const pr = op.rightIdx !== undefined ? rightParsed[op.rightIdx] : null;
-        const diffs = (op.tokenDiffs || []).filter(t => t.severity !== 'equal');
+        const diffs = (op.tokenDiffs || []).filter(t => t.severity !== 'equal' && !t.accepted);
         const oneSided = !(pl && pr);
         if (isLead[k] || (oneSided && nearLead(k))) { leadCount++; if (leadFirst < 0) leadFirst = at; return; }
         if (oneSided) {
@@ -2449,6 +2516,8 @@ const DiffEngine = (() => {
     trackContext,
     commentRole,
     computeSemanticDiff,
+    acceptKey,
+    acceptLabel,
     alignRows,
     summarizeChanges,
     countStats

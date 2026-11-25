@@ -52,8 +52,16 @@ test('unknown word (U) change is critical', () => eq(types(['G1 X1. U1.'], ['G1 
 console.log('Tolerance');
 test('within minor -> tolerance', () => eq(types(['G1 X1.0000'], ['G1 X1.0005']), 'tolerance'));
 test('between minor and major -> minor', () => eq(types(['G1 X1.000'], ['G1 X1.005']), 'minor'));
-test('beyond major -> critical, alwaysShow', () => {
+test('beyond major -> bigmove, hides with its toolpath', () => {
   const op = diff(['G1 X1.'], ['G1 X1.5']).ops[0];
+  eq(op.type, 'bigmove'); eq(!!op.alwaysShow, false);
+});
+test('beyond major plus feed change still shows through', () => {
+  const op = diff(['G1 X1. F10.'], ['G1 X1.5 F20.']).ops[0];
+  eq(op.type, 'critical'); eq(op.alwaysShow, true);
+});
+test('G91 axis change still shows through', () => {
+  const op = diff(['G91 G1 X1.'], ['G91 G1 X1.5']).ops[0];
   eq(op.type, 'critical'); eq(op.alwaysShow, true);
 });
 test('no "coordinate" type reaches the UI', () => {
@@ -121,10 +129,10 @@ test('identical files have no diffs', () => {
 });
 
 console.log('Number formats');
-test('X.5 vs X.6 is caught', () => eq(types(['G1 X.5'], ['G1 X.6']), 'critical'));
-test('X-.25 vs X-.35 is caught', () => eq(types(['G1 X-.25'], ['G1 X-.35']), 'critical'));
+test('X.5 vs X.6 is caught', () => eq(types(['G1 X.5'], ['G1 X.6']), 'bigmove'));
+test('X-.25 vs X-.35 is caught', () => eq(types(['G1 X-.25'], ['G1 X-.35']), 'bigmove'));
 test('F.5 vs F.6 is caught', () => eq(types(['G1 X1. F.5'], ['G1 X1. F.6']), 'critical'));
-test('X 1. (space) vs X 2. is caught', () => eq(types(['G1 X 1.'], ['G1 X 2.']), 'critical'));
+test('X 1. (space) vs X 2. is caught', () => eq(types(['G1 X 1.'], ['G1 X 2.']), 'bigmove'));
 test('X0.5 equals X.5', () => eq(types(['G1 X0.5'], ['G1 X.5']), 'equal'));
 test('X+1. equals X1.', () => eq(types(['G1 X+1.'], ['G1 X1.']), 'equal'));
 
@@ -157,7 +165,7 @@ test('70,000-line toolpath with one change: fast and found', () => {
   const t = Date.now();
   const ops = diff(L, R).ops.filter(o => o.type !== 'equal');
   eq(ops.length, 1);
-  eq(ops[0].type, 'critical');
+  eq(ops[0].type, 'bigmove');
   if (Date.now() - t > 10000) throw new Error('too slow: ' + (Date.now() - t) + ' ms');
 });
 test('70,000-line re-post with tiny changes everywhere: all within tolerance', () => {
@@ -285,8 +293,8 @@ test('GOTO label change is critical even with N ignored', () => {
 test('plain N change still ignored', () => eq(opAt(['N10 G1 X1. F10.'], ['N20 G1 X1. F10.'], 0), 'equal'));
 test('arc R small change graded by tolerance', () =>
   eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5004'], 1), 'tolerance'));
-test('arc R big change is critical', () =>
-  eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.6'], 1), 'critical'));
+test('arc R big change is a big move', () =>
+  eq(opAt(['G1 X0. Y0. F10.', 'G2 X1. Y1. R.5'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R.6'], 1), 'bigmove'));
 test('canned cycle R change stays critical', () =>
   eq(opAt(['G81 Z-1. R.1 F10.'], ['G81 Z-1. R.1004 F10.'], 0), 'critical'));
 test('macro number format: #100=5. equals #100=5.0', () => eq(opAt(['#100=5.'], ['#100=5.0'], 0), 'equal'));
@@ -334,8 +342,8 @@ test('R sign picks other side = critical', () =>
 test('big arc (>180) with R- = within tolerance', () =>
   // G3 CCW from (0,0) to (1,1) around (1,0): 270 deg
   eq(fieldOf(['G1 X0. Y0. F10.', 'G3 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G3 X1. Y1. R-1.'], 1), 'tolerance:arcFormat'));
-test('radius off by .02 = critical', () =>
-  eq(fieldOf(['G1 X0. Y0. F10.', 'G2 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R1.02'], 1), 'critical:arcFormat'));
+test('radius off by .02 = big move', () =>
+  eq(fieldOf(['G1 X0. Y0. F10.', 'G2 X1. Y1. I1. J0.'], ['G1 X0. Y0. F10.', 'G2 X1. Y1. R1.02'], 1), 'bigmove:arcFormat'));
 test('unknown start point = critical', () =>
   eq(fieldOf(['G2 X1. Y1. I1. J0. F10.'], ['G2 X1. Y1. R1. F10.'], 0), 'critical:arcFormat'));
 test('G18 arc uses X/Z with I/K', () =>
@@ -684,6 +692,42 @@ test('vertical arc lead-in swapped for a line is tagged lead-in', () => {
   const L = swap('G00 Z1.', 'G00 Z1.\nG19 G03 Y1. Z0.5 K0.01 F20.').join('\n').split('\n');
   const R = swap('G00 Z1.', 'G00 Z1.\nG01 Y1. Z0.49 F20.').join('\n').split('\n');
   eq(tpSum(L, R).tags.includes('lead-in'), true);
+});
+
+console.log('\nAccepted changes');
+const keysOf = (L, R) => {
+  const ks = [];
+  for (const o of diff(L, R).ops) for (const d of (o.tokenDiffs || [])) { const k = DE.acceptKey(d); if (k) ks.push(k); }
+  return ks;
+};
+const diffAcc = (L, R, keys) => DE.computeSemanticDiff(L, R, {
+  rules: DEFAULT_RULES, minorThreshold: 0.001, majorThreshold: 0.01, accepts: new Set(keys)
+});
+test('accept key ignores number format (Z.245 = Z0.2450)', () =>
+  eq(keysOf(['G0 Z.245'], ['G0 Z.345'])[0], keysOf(['G0 Z0.2450'], ['G0 Z0.3450'])[0]));
+test('accepted G54 -> G56 drops out everywhere', () => {
+  const L = ['G90 G54 G0 X1.', 'G0 Z1.', 'G90 G54 G0 X2.'], R = ['G90 G56 G0 X1.', 'G0 Z1.', 'G90 G56 G0 X2.'];
+  const r = diffAcc(L, R, keysOf(['G54'], ['G56']));
+  eq(r.ops.map(o => o.type).join(','), 'accepted,equal,accepted');
+  eq(r.ops[0].acceptedType, 'workoffset');
+  eq(!!r.ops[0].alwaysShow, false);
+});
+test('accept is exact: G54 -> G57 still flagged', () =>
+  eq(diffAcc(['G54'], ['G57'], keysOf(['G54'], ['G56'])).ops[0].type, 'workoffset'));
+test('accept is exact: Z.245 -> Z.346 still flagged', () =>
+  eq(diffAcc(['G0 Z.245'], ['G0 Z.346'], keysOf(['G0 Z.245'], ['G0 Z.345'])).ops[0].type, 'bigmove'));
+test('accepted Z leaves the feed change on the line critical', () => {
+  const op = diffAcc(['G1 Z.245 F10.'], ['G1 Z.345 F20.'], keysOf(['G0 Z.245'], ['G0 Z.345'])).ops[0];
+  eq(op.type, 'critical'); eq(op.alwaysShow, true);
+});
+test('accepted Z with a small X change re-grades by tolerance', () =>
+  eq(diffAcc(['G0 X1. Z.245'], ['G0 X1.005 Z.345'], keysOf(['G0 Z.245'], ['G0 Z.345'])).ops[0].type, 'minor'));
+test('accept label shows words as written', () =>
+  eq(DE.acceptLabel(diff(['G0 Z.245'], ['G0 Z.345']).ops[0].tokenDiffs[0]), 'Z.245 → Z.345'));
+test('accepted Z change is not tagged as a shift', () => {
+  const L = ['G0 X1. Z.245', 'G0 X2. Z.245', 'G0 X3. Z.245'], R = ['G0 X1. Z.345', 'G0 X2. Z.345', 'G0 X3. Z.345'];
+  const r = diffAcc(L, R, keysOf(['G0 Z.245'], ['G0 Z.345']));
+  eq(DE.summarizeChanges(r).some(s => s.shifts.length), false);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

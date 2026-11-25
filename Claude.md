@@ -195,10 +195,12 @@ Whole added/removed toolpaths do not.
 - Grades lines whose type is coordinate / coordinate-z by max delta:
   - <= minorThreshold: tolerance
   - <= majorThreshold: minor (amber)
-  - >  majorThreshold: critical (red), overMajor = true, always surfaces
+  - >  majorThreshold: bigmove (orange, "Big move"), overMajor = true.
+    Hides with its toolpath. Own legend chip, count and gutter mark
 - Lines already critical / workoffset are never downgraded
 - After this step no op has type coordinate / coordinate-z
-- Sets op.alwaysShow on every critical / workoffset op
+- Sets op.alwaysShow on every critical / workoffset op (critical always
+  means critical; bigmove is never forced)
 
 **Line alignment** (`alignLines`), per matched toolpath:
 1. Identical lines at start and end are matched directly (fast path)
@@ -503,6 +505,20 @@ scroll through code) is not built. Evaluate whether the dropdown is sufficient.
 
 ---
 
+## Accepted Changes ("find and accept")
+
+- Click a changed word, then **Accept everywhere** in the info panel
+- Rule = exact old -> new words for one token diff: `DiffEngine.acceptKey(d)`
+  (field + words, numbers in one form: Z.245 = Z0.2450)
+- Whole file, paired lines only (added / removed lines are never accepted)
+- Not saved. Cleared on New and Swap
+- Engine: `opts.accepts` (Set of keys) -> `applyAccepts` marks `d.accepted`,
+  re-grades the line from what is left. Nothing left -> type 'accepted'
+  (acceptedType = old type). Runs before alwaysShow, so accepted never forces
+- app.js: accepted shows plain (like within tolerance), not counted, no F7 stop.
+  Legend strip `#accept-banner`: rules with line counts, Show (old colors), Clear all
+- Change summary ignores accepted diffs (no shift / feed tag from them)
+
 ## Critical Difference Rules
 
 These diffs must always surface even when a toolpath's Show/Hide is OFF.
@@ -563,7 +579,9 @@ A comment diff is skipped only when every side that has a compared comment is la
 Diff engine op types (final, after tolerance):
 - equal: no difference
 - workoffset: work offset change (purple, highest tier)
-- critical: critical field difference (red)
+- critical: critical field difference (red). Always shows through hidden toolpaths
+- bigmove: coordinate change past the major threshold (orange, "Big move").
+  Hides with its toolpath
 - minor: amber
 - tolerance: within minor threshold (faint, not counted)
 - added / removed: one-sided ops
@@ -573,6 +591,7 @@ coordinate / coordinate-z exist only inside the engine, before tolerance grading
 app.js maps these via decoType():
 - critical maps to major (CSS class diff-bg-major)
 - workoffset maps to workoffset (CSS class diff-bg-workoffset)
+- bigmove maps to bigmove (CSS class diff-bg-bigmove)
 - any unknown type maps to major (never hidden by accident)
 
 ## Toolpath Segmentation Rules (Do Not Simplify)
@@ -614,6 +633,7 @@ Tuned for Fusion 360 posts on Brother Speedio. Key behaviors to preserve:
 |---|---|---|---|
 | Work offset | diff-bg-workoffset | #33104a | #c040ff purple |
 | Critical | diff-bg-major | #3b1111 | #c62828 red |
+| Big move | diff-bg-bigmove | #3a2008 | #e8740c orange |
 | Minor | diff-bg-minor | #2e2500 | #c89a10 amber |
 | Within tolerance | diff-bg-tolerance | faint (rgba) | dotted grey |
 | Added | diff-bg-added | #0d2818 | #3fb950 green |

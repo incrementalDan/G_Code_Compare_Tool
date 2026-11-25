@@ -16,6 +16,7 @@ const Info = (() => {
   const RED = chip('chip-critical', 'Critical');
   const PURPLE = chip('chip-workoffset', 'Work offset');
   const AMBER = chip('chip-minor', 'Minor');
+  const ORANGE = chip('chip-bigmove', 'Big move');
   const FAINT = chip('chip-tolerance', 'Within tol.');
   const GREEN = chip('chip-added', 'Added');
   const BURG = chip('chip-removed', 'Removed');
@@ -99,11 +100,11 @@ const Info = (() => {
       Two <code>G100</code> lines compare only their own G-codes (G100 does its own positioning)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Axis or I/J/K on one side only</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Axis or F on one side only, but same as the value already active (e.g. <code>Z-.5</code> repeated)</td><td>${AMBER}</td><td></td></tr>
-    <tr><td>X/Y/Z/A/B/C/I/J/K value change, and R on G2/G3 arcs</td><td>by size — see <a href="#info-filters">Tolerance</a></td><td>if over major</td></tr>
+    <tr><td>X/Y/Z/A/B/C/I/J/K value change, and R on G2/G3 arcs</td><td>by size — see <a href="#info-filters">Tolerance</a></td><td></td></tr>
     <tr><td>Any axis value change in G91 (incremental) — errors add up</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Same arc written as <code>R</code> on one side, <code>I/J/K</code> on the other (post setting). Radius graded by
       <a href="#info-filters">Tolerance</a>; R sign checked against the I/J/K arc (R- = more than 180°) in the active plane G17/G18/G19.
-      Grey note: <i>same arc</i></td><td>by size</td><td>if over major</td></tr>
+      Grey note: <i>same arc</i></td><td>by size</td><td></td></tr>
     <tr><td>R sign picks the other side of 180°, full circle vs R, or start point unknown (cannot confirm)</td><td>${RED}</td><td>${ALWAYS}</td></tr>
     <tr><td>Rotary A/B/C one full turn apart (<code>A359.999</code> vs <code>A-0.001</code>). Stays red: with rollover off
       the table turns the long way. Grey note says why</td><td>${RED}</td><td>${ALWAYS}</td></tr>
@@ -181,9 +182,15 @@ const Info = (() => {
     <tr><th>Change size</th><th>TOL on (default)</th><th>TOL off</th></tr>
     <tr><td>≤ Minor threshold (default 0.001)</td><td>${FAINT} not counted</td><td>${AMBER}</td></tr>
     <tr><td>≤ Major threshold (default 0.01)</td><td>${AMBER}</td><td>${AMBER}</td></tr>
-    <tr><td>&gt; Major threshold</td><td>${RED} ${ALWAYS}</td><td>${RED} ${ALWAYS}</td></tr>
+    <tr><td>&gt; Major threshold</td><td>${ORANGE}</td><td>${ORANGE}</td></tr>
   </table>
   <p>TOL is set per toolpath (box on each toolpath row) or for all at once (TOL button in the header bar).</p>
+
+  <h4>Accept a change <span class="info-where">click a changed word</span></h4>
+  <p>For a change you expect (G54 → G56, Z.245 → Z.345): click the word, then <b>Accept everywhere</b>.
+  Every line with that exact old → new change goes plain and is not counted. Other changes on the
+  same line still show. Accepted rules are listed in the legend strip: ✕ to undo, Show to see them again.
+  Not saved between sessions.</p>
 
   <h4>Show / hide toolpath <span class="info-where">☑ on each toolpath row</span></h4>
   <p>Untick to hide that toolpath's diffs and dim its lines. Use it for toolpaths you
